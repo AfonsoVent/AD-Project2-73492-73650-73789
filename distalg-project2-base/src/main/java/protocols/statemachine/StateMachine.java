@@ -18,6 +18,7 @@ import protocols.agreement.requests.ProposeRequest;
 import protocols.statemachine.notifications.ChannelReadyNotification;
 import protocols.statemachine.notifications.ClientRequestReply;
 import protocols.statemachine.requests.OrderRequest;
+import protocols.statemachine.messages.ForwardOpMessage;
 import pt.unl.fct.di.novasys.babel.core.GenericProtocol;
 import pt.unl.fct.di.novasys.babel.exceptions.HandlerRegistrationException;
 import pt.unl.fct.di.novasys.babel.generic.ProtoMessage;
@@ -59,8 +60,12 @@ public class StateMachine extends GenericProtocol {
     private List<Host> membership;
     private int nextInstance;
 
+    // To [Operation Ordering]
     private final Map<Integer, DecidedNotification> decidedBuffer; // Reordering the decided buffer
     private int nextExecuteInstance; //Order(k)
+
+    // To [Leader Fowarding]
+    private Host currentLeader; // null if unknow
 
     public StateMachine(Properties props) throws IOException, HandlerRegistrationException {
         super(PROTOCOL_NAME, PROTOCOL_ID);
@@ -88,6 +93,10 @@ public class StateMachine extends GenericProtocol {
         registerChannelEventHandler(channelId, OutConnectionUp.EVENT_ID, this::uponOutConnectionUp);
         registerChannelEventHandler(channelId, InConnectionUp.EVENT_ID, this::uponInConnectionUp);
         registerChannelEventHandler(channelId, InConnectionDown.EVENT_ID, this::uponInConnectionDown);
+
+        /*--------------------  ------------------------------- */
+        registerMessageSerializer(channelId, ForwardOpMessage.MSG_ID, ForwardOpMessage.serializer);
+        registerMessageHandler(channelId, ForwardOpMessage.MSG_ID, this::uponForwardOpMessage, this::uponMsgFail);
 
         /*--------------------- Register Request Handlers ----------------------------- */
         registerRequestHandler(OrderRequest.REQUEST_ID, this::uponOrderRequest);
@@ -137,13 +146,28 @@ public class StateMachine extends GenericProtocol {
         logger.debug("Received request: " + request);
         if (state == State.JOINING) {
             //Do something smart (like buffering the requests)
-        } else if (state == State.ACTIVE) {
-            //Also do something starter, we don't want an infinite number of instances active
-        	//Maybe you should modify what is it that you are proposing so that you remember that this
-        	//operation was issued by the application (and not an internal operation, check the uponDecidedNotification)
+            return;
+        } 
+        
+        if (currentLeader == null) {
+            //Do something even more smart (like buffering until reconhecer leader :P)
+            return;
+        }
+
+        if (self.equals(currentLeader)) {
             sendRequest(new ProposeRequest(nextInstance++, request.getOpId(), request.getOperation()),
                     IncorrectAgreement.PROTOCOL_ID);
+        } else {
+            sendMessage(new ForwardOpMessage(request.getOpId(), request.getOperation()), currentLeader);
         }
+        
+        // else if (state == State.ACTIVE) {
+        //     //Also do something starter, we don't want an infinite number of instances active
+        // 	//Maybe you should modify what is it that you are proposing so that you remember that this
+        // 	//operation was issued by the application (and not an internal operation, check the uponDecidedNotification)
+        //     sendRequest(new ProposeRequest(nextInstance++, request.getOpId(), request.getOperation()),
+        //             IncorrectAgreement.PROTOCOL_ID); 
+        // }
     }
 
     /*--------------------------------- Notifications ---------------------------------------- */
@@ -164,10 +188,9 @@ public class StateMachine extends GenericProtocol {
     }
     
     private void uponLeaderChangeNotification(LeaderChangeNotification notification, short sourceProto) {
-    	logger.debug("Received notification: " + notification);
-    	//This is the notification that indicates a leader change in the agreement protocol. You must
-    	//do the necessary steps to react to this change, which at minimum involves redirecting pending
-    	//client requests to the new leader (notice that you might be the leader)
+        // Get the ID from notification, and save it
+        this.currentLeader = notification.getLeaderID();
+        logger.info("Received notification:" + currentLeader);
     }
 
     /*--------------------------------- Messages ---------------------------------------- */
@@ -199,6 +222,13 @@ public class StateMachine extends GenericProtocol {
 
     private void uponInConnectionDown(InConnectionDown event, int channelId) {
         logger.trace("Connection from {} is down, cause: {}", event.getNode(), event.getCause());
+    }
+
+    private void uponForwardOpMessage(ForwardOpMessage msg, Host from, short sourceProto, int channelId) {
+        // not the leader
+        if (currentLeader == null || !self.equals(currentLeader)) return;
+        
+        sendRequest(new ProposeRequest(nextInstance++, msg.getOpId(), msg.getOperation()), IncorrectAgreement.PROTOCOL_ID);
     }
 
     // Return everything to [starting - nextExecuteInstance]
