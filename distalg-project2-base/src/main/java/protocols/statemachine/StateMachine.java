@@ -28,6 +28,8 @@ import pt.unl.fct.di.novasys.channel.tcp.events.OutConnectionDown;
 import pt.unl.fct.di.novasys.channel.tcp.events.OutConnectionFailed;
 import pt.unl.fct.di.novasys.channel.tcp.events.OutConnectionUp;
 import pt.unl.fct.di.novasys.network.data.Host;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * This is NOT fully functional StateMachine implementation.
@@ -57,9 +59,14 @@ public class StateMachine extends GenericProtocol {
     private List<Host> membership;
     private int nextInstance;
 
+    private final Map<Integer, DecidedNotification> decidedBuffer; // Reordering the decided buffer
+    private int nextExecuteInstance; //Order(k)
+
     public StateMachine(Properties props) throws IOException, HandlerRegistrationException {
         super(PROTOCOL_NAME, PROTOCOL_ID);
-        nextInstance = 0;
+        // ordering
+        nextExecuteInstance = 0;
+        decidedBuffer = new HashMap<>();
 
         String address = props.getProperty("babel.address");
         String port = props.getProperty("babel.port");
@@ -141,11 +148,19 @@ public class StateMachine extends GenericProtocol {
 
     /*--------------------------------- Notifications ---------------------------------------- */
     private void uponDecidedNotification(DecidedNotification notification, short sourceProto) {
-        logger.debug("Received notification: " + notification);
-        //Maybe we should make sure operations are executed in order?
-        //You should be careful and check if this operation if an application operation (and send it up)
-        //or if this is an operations that was executed by the state machine itself (in which case you should execute)
-        triggerNotification(new ClientRequestReply(notification.getOpId(), notification.getOperation()));
+        logger.debug("Received notification: {}", notification);
+        int instance = notification.getInstance();
+        
+        // Catch already executed instance (number less then actual instance expected)
+        if (instance < nextExecuteInstance) {
+            logger.debug("Ignoring because was already executed the instance {}", instance);
+            return;
+        }
+
+        // No duplication
+        decidedBuffer.putIfAbsent(instance, notification);
+
+        tryExecuteInOrder();
     }
     
     private void uponLeaderChangeNotification(LeaderChangeNotification notification, short sourceProto) {
@@ -186,4 +201,14 @@ public class StateMachine extends GenericProtocol {
         logger.trace("Connection from {} is down, cause: {}", event.getNode(), event.getCause());
     }
 
+    // Return everything to [starting - nextExecuteInstance]
+    private void tryExecuteInOrder() {
+        DecidedNotification next;
+        while ((next = decidedBuffer.remove(nextExecuteInstance)) != null) {
+            triggerNotification(new ClientRequestReply(next.getOpId(), next.getOperation()));
+            
+            // Update nextExecuteInstance
+            nextExecuteInstance++;
+        }
+    }
 }
