@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Properties;
 import java.util.Queue;
 import java.util.Set;
+import java.util.UUID;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -22,6 +23,7 @@ import protocols.statemachine.notifications.ClientRequestReply;
 import protocols.statemachine.requests.OrderRequest;
 import protocols.statemachine.messages.ForwardOpMessage;
 import protocols.statemachine.timers.ReconnectTimer;
+import protocols.statemachine.utils.PendingOp;
 import pt.unl.fct.di.novasys.babel.core.GenericProtocol;
 import pt.unl.fct.di.novasys.babel.exceptions.HandlerRegistrationException;
 import pt.unl.fct.di.novasys.babel.generic.ProtoMessage;
@@ -70,6 +72,7 @@ public class StateMachine extends GenericProtocol {
 
     // To [Leader Fowarding]
     private Host currentLeader; // null if unknow
+    private final Map<UUID, PendingOp> pendingOps = new HashMap<>();
 
     // To [Connection Management]
     private final Set<Host> connectedPeers = new HashSet<>(); // Current active TCP connections
@@ -177,11 +180,15 @@ public class StateMachine extends GenericProtocol {
             return;
         }
 
+        // Local op became pending
+        trackPending(request.getOpId(), request.getOperation(), self);
+
         if (self.equals(currentLeader)) {
+            // Send(ProposeReq(Instance, OpId, Op), ProtocolID)
             sendRequest(new ProposeRequest(nextInstance++, request.getOpId(), request.getOperation()),
                     IncorrectAgreement.PROTOCOL_ID);
         } else {
-            // Send(FwMsg(Id, Op), IdLeader)
+            // Send(FwMsg(OpId, Op), Leader)
             sendOrBufferToHost(new ForwardOpMessage(request.getOpId(), request.getOperation()), currentLeader);
         }
     }
@@ -190,6 +197,9 @@ public class StateMachine extends GenericProtocol {
     private void uponDecidedNotification(DecidedNotification notification, short sourceProto) {
         logger.debug("Received notification: {}", notification);
         int instance = notification.getInstance();
+
+        // Assuming that k is decided, the next one must be (at least) k+1
+        nextInstance = Math.max(nextInstance, instance + 1);
         
         // Catch already executed instance (number less then actual instance expected)
         if (instance < nextExecuteInstance) {
@@ -200,13 +210,39 @@ public class StateMachine extends GenericProtocol {
         // No duplication
         decidedBuffer.putIfAbsent(instance, notification);
 
+        // Decided, clear Pending
+        clearPending(notification.getOpId());
+
         tryExecuteInOrder();
     }
     
     private void uponLeaderChangeNotification(LeaderChangeNotification notification, short sourceProto) {
-        // Get the ID from notification, and save it
-        this.currentLeader = notification.getLeaderID();
+        Host newLeader = notification.getLeaderID();
+        this.currentLeader = newLeader;
         logger.info("Received notification:" + currentLeader);
+
+        if (newLeader == null) return;
+        if (pendingOps.isEmpty()) return;
+
+        if (self.equals(newLeader)) {
+            // Ask for pending Operations not made it
+            for (PendingOp p : pendingOps.values()) {
+                // Send(ProposeRequest(Instance, OpId, Op), ProtocolID)
+                sendRequest(
+                    new ProposeRequest(nextInstance++, p.getOpId(), p.getOperation()),
+                    IncorrectAgreement.PROTOCOL_ID
+                );
+            }
+        } else {
+            // Send to new leader
+            for (PendingOp p : pendingOps.values()) {
+                // Send(FwMsg(OpId, Op), newLeader)
+                sendOrBufferToHost(
+                    new ForwardOpMessage(p.getOpId(), p.getOperation()),
+                    newLeader
+                );
+            }
+        }
     }
 
     /*--------------------------------- Messages ---------------------------------------- */
@@ -228,6 +264,7 @@ public class StateMachine extends GenericProtocol {
         // Flush buffered forwarded operations to that peer
         Queue<ForwardOpMessage> q = outboundBuffer.get(h);
         while (q != null && !q.isEmpty()) {
+            // Send(MsgOp, host)
             sendMessage(q.poll(), h);
         }
     }
@@ -264,7 +301,10 @@ public class StateMachine extends GenericProtocol {
         // Check if host isn't leader
         if (currentLeader == null || !self.equals(currentLeader)) return;
         
-        // Send(Propose(Instance, id, Op), )
+        // FwOp pending at leader
+        trackPending(msg.getOpId(), msg.getOperation(), from);
+
+        // Send(Propose(Instance, OpId, Op), ProtocolID)
         sendRequest(new ProposeRequest(nextInstance++, msg.getOpId(), msg.getOperation()), 
             IncorrectAgreement.PROTOCOL_ID);
     }
@@ -331,5 +371,13 @@ public class StateMachine extends GenericProtocol {
             // Update nextExecuteInstance
             nextExecuteInstance++;
         }
+    }
+
+    private void trackPending(UUID opId, byte[] operation, Host origin) {
+        pendingOps.putIfAbsent(opId, new PendingOp(opId, operation, origin));
+    }
+    
+    private void clearPending(UUID opId) {
+        pendingOps.remove(opId);
     }
 }
