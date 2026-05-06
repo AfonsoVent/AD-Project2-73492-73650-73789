@@ -90,6 +90,8 @@ public class StateMachine extends GenericProtocol {
     private static final long RECONNECT_JITTER_MAX_MS = 50; // Randomness
     private static final int MAX_BUFFER_PER_PEER = 1000; // Max size of buffer
 
+    private final short agreementProtoId; // Genreric Protocol reciever (Raft/Multi-Paxos)
+
     public StateMachine(Properties props) throws IOException, HandlerRegistrationException {
         super(PROTOCOL_NAME, PROTOCOL_ID);
         
@@ -102,6 +104,9 @@ public class StateMachine extends GenericProtocol {
 
         // Proposal instance
         this.nextInstance = 0;
+
+        // Get agreement Protocol Id
+        this.agreementProtoId = Short.parseShort(props.getProperty("agreement_proto_id", "100"));
 
         String address = props.getProperty("babel.address");
         String port = props.getProperty("babel.port");
@@ -197,7 +202,7 @@ public class StateMachine extends GenericProtocol {
         if (self.equals(currentLeader)) {
             // Send(ProposeReq(Instance, OpId, Op), ProtocolID)
             sendRequest(new ProposeRequest(nextInstance++, request.getOpId(), request.getOperation()),
-                    IncorrectAgreement.PROTOCOL_ID);
+                    agreementProtoId);
         } else {
             // Send(FwMsg(OpId, Op), Leader)
             sendOrBufferToHost(new ForwardOpMessage(request.getOpId(), request.getOperation()), currentLeader);
@@ -258,8 +263,7 @@ public class StateMachine extends GenericProtocol {
                 // Send(ProposeRequest(Instance, OpId, Op), ProtocolID)
                 sendRequest(
                     new ProposeRequest(nextInstance++, p.getOpId(), p.getOperation()),
-                    IncorrectAgreement.PROTOCOL_ID
-                );
+                    agreementProtoId);
             }
         } else {
             // Send to new leader
@@ -349,7 +353,7 @@ public class StateMachine extends GenericProtocol {
 
         // Send(Propose(Instance, OpId, Op), ProtocolID)
         sendRequest(new ProposeRequest(nextInstance++, msg.getOpId(), msg.getOperation()), 
-            IncorrectAgreement.PROTOCOL_ID);
+            agreementProtoId);
     }
 
     private void sendOrBufferToHost(ForwardOpMessage msg, Host dst) {
@@ -387,9 +391,6 @@ public class StateMachine extends GenericProtocol {
         // Ignore host if isn't part of the network membership
         if (!isKnownMember(h)) return;
 
-        // Reconnect with only know members
-        if (!membership.contains(h)) return;
-
         // Avoid scheduling duplicate reconnect timers
         if (reconnectScheduled.contains(h)) return;
     
@@ -415,7 +416,7 @@ public class StateMachine extends GenericProtocol {
         reconnectScheduled.remove(h);
         
         // If it's invalid to reconnect, don't need it
-        if (h == null || !membership.contains(h) || connectedPeers.contains(h)) return;
+        if (h == null || !isKnownMember(h) || connectedPeers.contains(h)) return;
         
         // Attempt to reconnect
         openConnection(h);
@@ -461,8 +462,7 @@ public class StateMachine extends GenericProtocol {
                 // Send(ProposeReq(Instance, OpId, Op), ProtocolID)
                 sendRequest(
                     new ProposeRequest(nextInstance++, req.getOpId(), req.getOperation()),
-                    IncorrectAgreement.PROTOCOL_ID
-                );
+                    agreementProtoId);
             } else {
                 // Send(FwMsg(OpId, Op), Leader)
                 sendOrBufferToHost(
