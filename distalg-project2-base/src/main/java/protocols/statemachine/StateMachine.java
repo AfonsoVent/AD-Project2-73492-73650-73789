@@ -177,7 +177,6 @@ public class StateMachine extends GenericProtocol {
 
     /*--------------------------------- Requests ---------------------------------------- */
     private void uponOrderRequest(OrderRequest request, short sourceProto) {
-        logger.debug("Received request: " + request);
         if (state == State.JOINING) {
             //Do something smart (like buffering the requests)
             return;
@@ -186,6 +185,9 @@ public class StateMachine extends GenericProtocol {
         if (currentLeader == null) {
             // Add to buffer
             waitingLeader.add(request);
+
+            logger.debug("Buffered opId {} (reason= unknow leader, waitingLeaderSize={})",
+                request.getOpId(), waitingLeader.size());
             return;
         }
 
@@ -199,6 +201,8 @@ public class StateMachine extends GenericProtocol {
         } else {
             // Send(FwMsg(OpId, Op), Leader)
             sendOrBufferToHost(new ForwardOpMessage(request.getOpId(), request.getOperation()), currentLeader);
+            
+            logger.debug("Forwarding opId {} to leader {}", request.getOpId(), currentLeader);
         }
     }
 
@@ -230,9 +234,17 @@ public class StateMachine extends GenericProtocol {
     
     private void uponLeaderChangeNotification(LeaderChangeNotification notification, short sourceProto) {
         Host newLeader = notification.getLeaderID();
-        this.currentLeader = newLeader;
-        logger.info("Received notification:" + currentLeader);
+        
+        // Ignore invalid leaders updates
+        if (newLeader != null && !isKnownMember(newLeader)) {
+            logger.warn("Ignoring LeaderChange to non-member host {} (membership={})", newLeader, membership);
+            return;
+        }
 
+        Host oldLeader = this.currentLeader;
+        this.currentLeader = newLeader;
+        logger.info("Leader changed: {} -> {}", oldLeader, newLeader);
+        
         if (newLeader == null) return;
 
         // Process the "lost" Ops while the leader was unknow
@@ -316,6 +328,12 @@ public class StateMachine extends GenericProtocol {
     private void uponForwardOpMessage(ForwardOpMessage msg, Host from, short sourceProto, int channelId) {
         // Check if host isn't leader
         if (currentLeader == null || !self.equals(currentLeader)) return;
+
+        // Only accept from knowed replicas
+        if (!isKnownMember(from)) {
+            logger.warn("Ignoring ForwardOpMessage from unknown host {} opId={}", from, msg.getOpId());
+            return;
+        }    
         
         // Get OpId
         UUID opId = msg.getOpId();
@@ -354,6 +372,9 @@ public class StateMachine extends GenericProtocol {
             // Add it
             q.add(msg);
 
+            logger.debug("Buffered opId {} for {} (reason=no connection, queueSize={})",
+                msg.getOpId(), dst, q.size());
+
             // Trigger reconnect workflow
             ensureReconnect(dst);
         }
@@ -363,6 +384,9 @@ public class StateMachine extends GenericProtocol {
         // Ignore invalid targets
         if (h == null || h.equals(self)) return;
         
+        // Ignore host if isn't part of the network membership
+        if (!isKnownMember(h)) return;
+
         // Reconnect with only know members
         if (!membership.contains(h)) return;
 
@@ -376,6 +400,9 @@ public class StateMachine extends GenericProtocol {
         
         long jitter = ThreadLocalRandom.current().nextLong(RECONNECT_JITTER_MAX_MS + 1);
         long scheduleDelay = Math.min(baseDelay + jitter, RECONNECT_MAX_MS);
+
+        logger.debug("Reconnect scheduled to {} in {} ms (base={} ms, jitter={} ms)",
+            h, scheduleDelay, baseDelay, jitter);
 
         // Schedule reconnect attempt in the future
         setupTimer(new ReconnectTimer(h), scheduleDelay);
@@ -403,6 +430,8 @@ public class StateMachine extends GenericProtocol {
     private void tryExecuteInOrder() {
         DecidedNotification next;
         while ((next = decidedBuffer.remove(nextExecuteInstance)) != null) {
+            logger.debug("Executing decided instance {} opId {}", nextExecuteInstance, next.getOpId());
+
             triggerNotification(new ClientRequestReply(next.getOpId(), next.getOperation()));
             
             // Update nextExecuteInstance
@@ -441,6 +470,13 @@ public class StateMachine extends GenericProtocol {
                     currentLeader
                 );
             }
+
+            logger.debug("Forwarding buffered opId {} to leader {}", req.getOpId(), currentLeader);
         }
+    }
+
+    // Check if the host is valid and belongs in static set of replicas
+    private boolean isKnownMember(Host h) {
+        return h != null && membership != null && membership.contains(h);
     }
 }
