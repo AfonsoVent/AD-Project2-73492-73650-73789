@@ -6,6 +6,8 @@ import java.net.UnknownHostException;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Properties;
+import java.util.Queue;
+import java.util.Set;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -19,6 +21,7 @@ import protocols.statemachine.notifications.ChannelReadyNotification;
 import protocols.statemachine.notifications.ClientRequestReply;
 import protocols.statemachine.requests.OrderRequest;
 import protocols.statemachine.messages.ForwardOpMessage;
+import protocols.statemachine.timers.ReconnectTimer;
 import pt.unl.fct.di.novasys.babel.core.GenericProtocol;
 import pt.unl.fct.di.novasys.babel.exceptions.HandlerRegistrationException;
 import pt.unl.fct.di.novasys.babel.generic.ProtoMessage;
@@ -30,6 +33,7 @@ import pt.unl.fct.di.novasys.channel.tcp.events.OutConnectionFailed;
 import pt.unl.fct.di.novasys.channel.tcp.events.OutConnectionUp;
 import pt.unl.fct.di.novasys.network.data.Host;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 
 /**
@@ -58,20 +62,35 @@ public class StateMachine extends GenericProtocol {
 
     private State state;
     private List<Host> membership;
-    private int nextInstance;
+    private int nextInstance; // // This *proposal* progress
 
     // To [Operation Ordering]
-    private final Map<Integer, DecidedNotification> decidedBuffer; // Reordering the decided buffer
-    private int nextExecuteInstance; //Order(k)
+    private final Map<Integer, DecidedNotification> decidedBuffer; // When (k) gets before (k-1), (k) is stored until (k-1) is executed.
+    private int nextExecuteInstance; // Incremental instance order
 
     // To [Leader Fowarding]
     private Host currentLeader; // null if unknow
 
+    // To [Connection Management]
+    private final Set<Host> connectedPeers = new HashSet<>(); // Current active TCP connections
+    private final Set<Host> reconnectScheduled = new HashSet<>(); // Used to scheduling duplicate reconnect timers
+    private final Map<Host, Queue<ForwardOpMessage>> outboundBuffer = new HashMap<>(); // Used when leader is unreachable
+    private static final long RECONNECT_BASE_MS = 200; // Initial time to reconnect
+    private static final long RECONNECT_MAX_MS = 5000; // Max time to reconnect
+    private final Map<Host, Long> reconnectDelay = new HashMap<>(); // Used to get the time is getting to reconnect
+
     public StateMachine(Properties props) throws IOException, HandlerRegistrationException {
         super(PROTOCOL_NAME, PROTOCOL_ID);
+        
         // ordering
         nextExecuteInstance = 0;
         decidedBuffer = new HashMap<>();
+
+        // Starting the currentLeader is null until someone tells that isn't
+        this.currentLeader = null;
+
+        // Proposal instance
+        this.nextInstance = 0;
 
         String address = props.getProperty("babel.address");
         String port = props.getProperty("babel.port");
@@ -94,9 +113,13 @@ public class StateMachine extends GenericProtocol {
         registerChannelEventHandler(channelId, InConnectionUp.EVENT_ID, this::uponInConnectionUp);
         registerChannelEventHandler(channelId, InConnectionDown.EVENT_ID, this::uponInConnectionDown);
 
-        /*--------------------  ------------------------------- */
+        /*-------------------- Register SMR Internal Handlers ------------------------------- */
+        // used to forwarding leader from other replicas
         registerMessageSerializer(channelId, ForwardOpMessage.MSG_ID, ForwardOpMessage.serializer);
+        // Used to processes forwarded operations received from other replicas
         registerMessageHandler(channelId, ForwardOpMessage.MSG_ID, this::uponForwardOpMessage, this::uponMsgFail);
+        // Used to retry failed peer connections
+        registerTimerHandler(ReconnectTimer.TIMER_ID, this::uponReconnectTimer);
 
         /*--------------------- Register Request Handlers ----------------------------- */
         registerRequestHandler(OrderRequest.REQUEST_ID, this::uponOrderRequest);
@@ -158,16 +181,9 @@ public class StateMachine extends GenericProtocol {
             sendRequest(new ProposeRequest(nextInstance++, request.getOpId(), request.getOperation()),
                     IncorrectAgreement.PROTOCOL_ID);
         } else {
-            sendMessage(new ForwardOpMessage(request.getOpId(), request.getOperation()), currentLeader);
+            // Send(FwMsg(Id, Op), IdLeader)
+            sendOrBufferToHost(new ForwardOpMessage(request.getOpId(), request.getOperation()), currentLeader);
         }
-        
-        // else if (state == State.ACTIVE) {
-        //     //Also do something starter, we don't want an infinite number of instances active
-        // 	//Maybe you should modify what is it that you are proposing so that you remember that this
-        // 	//operation was issued by the application (and not an internal operation, check the uponDecidedNotification)
-        //     sendRequest(new ProposeRequest(nextInstance++, request.getOpId(), request.getOperation()),
-        //             IncorrectAgreement.PROTOCOL_ID); 
-        // }
     }
 
     /*--------------------------------- Notifications ---------------------------------------- */
@@ -201,19 +217,39 @@ public class StateMachine extends GenericProtocol {
 
     /* --------------------------------- TCPChannel Events ---------------------------- */
     private void uponOutConnectionUp(OutConnectionUp event, int channelId) {
-        logger.info("Connection to {} is up", event.getNode());
+        Host h = event.getNode();
+        
+        // Mark peer connected
+        connectedPeers.add(h);
+
+        // Reset time to reconnect
+        reconnectDelay.put(h, RECONNECT_BASE_MS);
+
+        // Flush buffered forwarded operations to that peer
+        Queue<ForwardOpMessage> q = outboundBuffer.get(h);
+        while (q != null && !q.isEmpty()) {
+            sendMessage(q.poll(), h);
+        }
     }
 
     private void uponOutConnectionDown(OutConnectionDown event, int channelId) {
-        logger.debug("Connection to {} is down, cause {}", event.getNode(), event.getCause());
+        Host h = event.getNode();
+
+        // Remove from connecteds
+        connectedPeers.remove(h);
+
+        // Schedule reconnect attempt
+        ensureReconnect(h);    
     }
 
     private void uponOutConnectionFailed(OutConnectionFailed<ProtoMessage> event, int channelId) {
-        logger.debug("Connection to {} failed, cause: {}", event.getNode(), event.getCause());
-        //Maybe we don't want to do this forever. At some point we assume he is no longer there.
-        //Also, maybe wait a little bit before retrying, or else you'll be trying 1000s of times per second
-        if(membership.contains(event.getNode()))
-            openConnection(event.getNode());
+        Host h = event.getNode();
+
+        // Keep disnonnected
+        connectedPeers.remove(h);
+        
+        // Schedule reconnect attempt
+        ensureReconnect(h);
     }
 
     private void uponInConnectionUp(InConnectionUp event, int channelId) {
@@ -225,12 +261,67 @@ public class StateMachine extends GenericProtocol {
     }
 
     private void uponForwardOpMessage(ForwardOpMessage msg, Host from, short sourceProto, int channelId) {
-        // not the leader
+        // Check if host isn't leader
         if (currentLeader == null || !self.equals(currentLeader)) return;
         
-        sendRequest(new ProposeRequest(nextInstance++, msg.getOpId(), msg.getOperation()), IncorrectAgreement.PROTOCOL_ID);
+        // Send(Propose(Instance, id, Op), )
+        sendRequest(new ProposeRequest(nextInstance++, msg.getOpId(), msg.getOperation()), 
+            IncorrectAgreement.PROTOCOL_ID);
     }
 
+    private void sendOrBufferToHost(ForwardOpMessage msg, Host dst) {
+        // Check destination(dst)
+        if (dst == null) return;
+        
+        if (connectedPeers.contains(dst)) {
+            // Send msg to destination
+            sendMessage(msg, dst);
+        } else {
+            // Peer unavailable; buffer message
+            outboundBuffer.computeIfAbsent(dst, h -> new LinkedList<>()).add(msg);
+            
+            // Trigger reconnect workflow
+            ensureReconnect(dst);
+        }
+    }
+
+    private void ensureReconnect(Host h) {
+        // Ignore invalid targets
+        if (h == null || h.equals(self)) return;
+        
+        // Reconnect with only know members
+        if (!membership.contains(h)) return;
+
+        // Avoid scheduling duplicate reconnect timers
+        if (reconnectScheduled.contains(h)) return;
+    
+        reconnectScheduled.add(h);
+
+        // Get delay time
+        long delay = reconnectDelay.getOrDefault(h, RECONNECT_BASE_MS);
+        
+        // Schedule reconnect attempt in the future
+        setupTimer(new ReconnectTimer(h), delay);
+    }
+
+    private void uponReconnectTimer(ReconnectTimer timer, long timerId) {
+        Host h = timer.getTarget();
+        
+        // Timer failed
+        reconnectScheduled.remove(h);
+        
+        // If it's invalid to reconnect, don't need it
+        if (h == null || !membership.contains(h) || connectedPeers.contains(h)) return;
+        
+        // Attempt to reconnect
+        openConnection(h);
+        
+        // Calculate new delay: Min(oldDelay * 2, RECONNECT_MAX_MS)
+        long oldDelay = reconnectDelay.getOrDefault(h, RECONNECT_BASE_MS);
+        reconnectDelay.put(h, Math.min(oldDelay * 2, RECONNECT_MAX_MS));
+    }
+
+    /* --------------------------------- Auxiliar Functions ---------------------------- */
     // Return everything to [starting - nextExecuteInstance]
     private void tryExecuteInOrder() {
         DecidedNotification next;
