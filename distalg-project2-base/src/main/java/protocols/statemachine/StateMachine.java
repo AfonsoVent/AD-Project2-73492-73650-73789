@@ -83,6 +83,9 @@ public class StateMachine extends GenericProtocol {
     private static final long RECONNECT_MAX_MS = 5000; // Max time to reconnect
     private final Map<Host, Long> reconnectDelay = new HashMap<>(); // Used to get the time is getting to reconnect
 
+    private final Set<UUID> seenForwardedOps = new HashSet<>(); // Used to ignore duplicate ForwardOpMessage replays beacuse reconnects
+    private final Set<UUID> decidedOpIds = new HashSet<>(); // Used to ignore forwarded messages of operations already decided
+
     public StateMachine(Properties props) throws IOException, HandlerRegistrationException {
         super(PROTOCOL_NAME, PROTOCOL_ID);
         
@@ -212,6 +215,9 @@ public class StateMachine extends GenericProtocol {
         // No duplication
         decidedBuffer.putIfAbsent(instance, notification);
 
+        // Mark operation as decided to block future replayed forwards
+        decidedOpIds.add(notification.getOpId());
+
         // Decided, clear Pending
         clearPending(notification.getOpId());
 
@@ -227,7 +233,7 @@ public class StateMachine extends GenericProtocol {
 
         // Process the "lost" Ops while the leader was unknow
         drainWaitingLeaderQueue();
-        
+
         if (pendingOps.isEmpty()) return;
 
         if (self.equals(newLeader)) {
@@ -307,6 +313,15 @@ public class StateMachine extends GenericProtocol {
         // Check if host isn't leader
         if (currentLeader == null || !self.equals(currentLeader)) return;
         
+        // Get OpId
+        UUID opId = msg.getOpId();
+
+        // Already decided
+        if (decidedOpIds.contains(opId)) return;
+
+        // Already on pending
+        if (!seenForwardedOps.add(opId)) return;
+
         // FwOp pending at leader
         trackPending(msg.getOpId(), msg.getOperation(), from);
 
