@@ -9,6 +9,10 @@ import java.util.Properties;
 import java.util.Queue;
 import java.util.Set;
 import java.util.UUID;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -34,9 +38,6 @@ import pt.unl.fct.di.novasys.channel.tcp.events.OutConnectionDown;
 import pt.unl.fct.di.novasys.channel.tcp.events.OutConnectionFailed;
 import pt.unl.fct.di.novasys.channel.tcp.events.OutConnectionUp;
 import pt.unl.fct.di.novasys.network.data.Host;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Map;
 
 /**
  * This is NOT fully functional StateMachine implementation.
@@ -85,6 +86,9 @@ public class StateMachine extends GenericProtocol {
 
     private final Set<UUID> seenForwardedOps = new HashSet<>(); // Used to ignore duplicate ForwardOpMessage replays beacuse reconnects
     private final Set<UUID> decidedOpIds = new HashSet<>(); // Used to ignore forwarded messages of operations already decided
+
+    private static final long RECONNECT_JITTER_MAX_MS = 50; // Randomness
+    private static final int MAX_BUFFER_PER_PEER = 1000; // Max size of buffer
 
     public StateMachine(Properties props) throws IOException, HandlerRegistrationException {
         super(PROTOCOL_NAME, PROTOCOL_ID);
@@ -338,9 +342,18 @@ public class StateMachine extends GenericProtocol {
             // Send msg to destination
             sendMessage(msg, dst);
         } else {
-            // Peer unavailable; buffer message
-            outboundBuffer.computeIfAbsent(dst, h -> new LinkedList<>()).add(msg);
+            Queue<ForwardOpMessage> q = outboundBuffer.computeIfAbsent(dst, h -> new LinkedList<>());
             
+            // Drop the oldest of queue to keep buffer bounded
+            if (q.size() >= MAX_BUFFER_PER_PEER) {
+                ForwardOpMessage dropped = q.poll();
+                logger.warn("Outbound buffer full for {} (max={}), dropping oldest opId={}",
+                        dst, MAX_BUFFER_PER_PEER, dropped != null ? dropped.getOpId() : null);
+            }
+
+            // Add it
+            q.add(msg);
+
             // Trigger reconnect workflow
             ensureReconnect(dst);
         }
@@ -359,10 +372,13 @@ public class StateMachine extends GenericProtocol {
         reconnectScheduled.add(h);
 
         // Get delay time
-        long delay = reconnectDelay.getOrDefault(h, RECONNECT_BASE_MS);
+        long baseDelay = reconnectDelay.getOrDefault(h, RECONNECT_BASE_MS);
         
+        long jitter = ThreadLocalRandom.current().nextLong(RECONNECT_JITTER_MAX_MS + 1);
+        long scheduleDelay = Math.min(baseDelay + jitter, RECONNECT_MAX_MS);
+
         // Schedule reconnect attempt in the future
-        setupTimer(new ReconnectTimer(h), delay);
+        setupTimer(new ReconnectTimer(h), scheduleDelay);
     }
 
     private void uponReconnectTimer(ReconnectTimer timer, long timerId) {
