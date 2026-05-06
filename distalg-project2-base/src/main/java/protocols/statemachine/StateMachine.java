@@ -69,6 +69,7 @@ public class StateMachine extends GenericProtocol {
     // To [Operation Ordering]
     private final Map<Integer, DecidedNotification> decidedBuffer; // When (k) gets before (k-1), (k) is stored until (k-1) is executed.
     private int nextExecuteInstance; // Incremental instance order
+    private final Queue<OrderRequest> waitingLeader = new LinkedList<>(); // Requests received while leader unknow
 
     // To [Leader Fowarding]
     private Host currentLeader; // null if unknow
@@ -176,7 +177,8 @@ public class StateMachine extends GenericProtocol {
         } 
         
         if (currentLeader == null) {
-            //Do something even more smart (like buffering until reconhecer leader :P)
+            // Add to buffer
+            waitingLeader.add(request);
             return;
         }
 
@@ -222,6 +224,10 @@ public class StateMachine extends GenericProtocol {
         logger.info("Received notification:" + currentLeader);
 
         if (newLeader == null) return;
+
+        // Process the "lost" Ops while the leader was unknow
+        drainWaitingLeaderQueue();
+        
         if (pendingOps.isEmpty()) return;
 
         if (self.equals(newLeader)) {
@@ -379,5 +385,31 @@ public class StateMachine extends GenericProtocol {
     
     private void clearPending(UUID opId) {
         pendingOps.remove(opId);
+    }
+
+    private void drainWaitingLeaderQueue() {
+        // Still having no leader
+        if (currentLeader == null) return;
+        
+        // Send to leader, with regular flow
+        OrderRequest req;
+        while ((req = waitingLeader.poll()) != null) {
+            // Op become pending
+            trackPending(req.getOpId(), req.getOperation(), self);
+    
+            if (self.equals(currentLeader)) {
+                // Send(ProposeReq(Instance, OpId, Op), ProtocolID)
+                sendRequest(
+                    new ProposeRequest(nextInstance++, req.getOpId(), req.getOperation()),
+                    IncorrectAgreement.PROTOCOL_ID
+                );
+            } else {
+                // Send(FwMsg(OpId, Op), Leader)
+                sendOrBufferToHost(
+                    new ForwardOpMessage(req.getOpId(), req.getOperation()),
+                    currentLeader
+                );
+            }
+        }
     }
 }
