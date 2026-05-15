@@ -17,7 +17,6 @@ import java.util.concurrent.ThreadLocalRandom;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import protocols.agreement.IncorrectAgreement;
 import protocols.agreement.notifications.DecidedNotification;
 import protocols.agreement.notifications.JoinedNotification;
 import protocols.agreement.notifications.LeaderChangeNotification;
@@ -94,8 +93,10 @@ public class StateMachine extends GenericProtocol {
     private final short agreementProtoId; // Genreric Protocol reciever (Raft/Multi-Paxos)
 
     // To Better performance - [Steal Leader]
-    private static final int STEAL_LEADER_THRESHOLD = 1000; // Trigger of number of ops to steal
+    private static final int STEAL_LEADER_THRESHOLD = 500; // Trigger of number of ops to steal
+    private static final long STEAL_TIME_WINDOW_MS = 1000; // trigger of time to steal
     private int forwardedRequestsCounter = 0; // Conter of ops getted and sent
+    private long windowStartTime = System.currentTimeMillis(); // Start time
 
     public StateMachine(Properties props) throws IOException, HandlerRegistrationException {
         super(PROTOCOL_NAME, PROTOCOL_ID);
@@ -212,19 +213,29 @@ public class StateMachine extends GenericProtocol {
             sendRequest(new ProposeRequest(nextInstance++, request.getOpId(), request.getOperation()),
                     agreementProtoId);
         } else {
+            long now = System.currentTimeMillis();
+            // Should I steal now the leader?
+
+            // If pass the time to reset, then reset
+            if (now - windowStartTime > STEAL_TIME_WINDOW_MS) {
+                forwardedRequestsCounter = 0;
+                windowStartTime = now;
+            }
+
             // Inc of ops sent to leader, to steal if need to
             forwardedRequestsCounter++;
 
-            // Should I steal now the leader?
+            // Check if he should steal
             if (forwardedRequestsCounter >= STEAL_LEADER_THRESHOLD) {
-                logger.info("Reached {} orders processed. Trying to *kindly steal* the lead from {}!", 
-                            STEAL_LEADER_THRESHOLD, currentLeader);
+                logger.info("High rate detected: {} requests processed in less than {} ms. Stealing the lead from {}!", 
+                            (STEAL_LEADER_THRESHOLD / STEAL_TIME_WINDOW_MS), STEAL_TIME_WINDOW_MS, currentLeader);
                 
                 // Req to Agreement to Steal Leader
                 sendRequest(new StealLeaderRequest(), agreementProtoId);
                 
                 // Whether or not he managed to steal the lead, he's going to restart
                 forwardedRequestsCounter = 0;
+                windowStartTime = now;
             }
 
             // Send(FwMsg(OpId, Op), Leader)
