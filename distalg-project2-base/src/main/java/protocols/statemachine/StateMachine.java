@@ -22,6 +22,7 @@ import protocols.agreement.notifications.DecidedNotification;
 import protocols.agreement.notifications.JoinedNotification;
 import protocols.agreement.notifications.LeaderChangeNotification;
 import protocols.agreement.requests.ProposeRequest;
+import protocols.agreement.requests.StealLeaderRequest;
 import protocols.statemachine.notifications.ChannelReadyNotification;
 import protocols.statemachine.notifications.ClientRequestReply;
 import protocols.statemachine.requests.OrderRequest;
@@ -91,6 +92,10 @@ public class StateMachine extends GenericProtocol {
     private static final int MAX_BUFFER_PER_PEER = 1000; // Max size of buffer
 
     private final short agreementProtoId; // Genreric Protocol reciever (Raft/Multi-Paxos)
+
+    // To Better performance - [Steal Leader]
+    private static final int STEAL_LEADER_THRESHOLD = 1000; // Trigger of number of ops to steal
+    private int forwardedRequestsCounter = 0; // Conter of ops getted and sent
 
     public StateMachine(Properties props) throws IOException, HandlerRegistrationException {
         super(PROTOCOL_NAME, PROTOCOL_ID);
@@ -200,10 +205,28 @@ public class StateMachine extends GenericProtocol {
         trackPending(request.getOpId(), request.getOperation(), self);
 
         if (self.equals(currentLeader)) {
+            // If self is leader, doesn't need to steal the leader from himself
+            forwardedRequestsCounter = 0;
+
             // Send(ProposeReq(Instance, OpId, Op), ProtocolID)
             sendRequest(new ProposeRequest(nextInstance++, request.getOpId(), request.getOperation()),
                     agreementProtoId);
         } else {
+            // Inc of ops sent to leader, to steal if need to
+            forwardedRequestsCounter++;
+
+            // Should I steal now the leader?
+            if (forwardedRequestsCounter >= STEAL_LEADER_THRESHOLD) {
+                logger.info("Reached {} orders processed. Trying to *kindly steal* the lead from {}!", 
+                            STEAL_LEADER_THRESHOLD, currentLeader);
+                
+                // Req to Agreement to Steal Leader
+                sendRequest(new StealLeaderRequest(), agreementProtoId);
+                
+                // Whether or not he managed to steal the lead, he's going to restart
+                forwardedRequestsCounter = 0;
+            }
+
             // Send(FwMsg(OpId, Op), Leader)
             sendOrBufferToHost(new ForwardOpMessage(request.getOpId(), request.getOperation()), currentLeader);
             
