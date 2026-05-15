@@ -93,10 +93,11 @@ public class StateMachine extends GenericProtocol {
     private final short agreementProtoId; // Genreric Protocol reciever (Raft/Multi-Paxos)
 
     // To Better performance - [Steal Leader]
-    private static final int STEAL_LEADER_THRESHOLD = 500; // Trigger of number of ops to steal
-    private static final long STEAL_TIME_WINDOW_MS = 1000; // trigger of time to steal
-    private int forwardedRequestsCounter = 0; // Conter of ops getted and sent
-    private long windowStartTime = System.currentTimeMillis(); // Start time
+    private static final double DECAY_FACTOR = 0.5; // who much it's gonna to reduce each time
+    private static final long DECAY_INTERVAL_MS = 500; // Time to reduce the weigth
+    private static final double STEAL_THRESHOLD = 300.0; // weigth need it to steal the leader
+    private double effectiveForwardWeigth = 0.0;
+    private long lastUpdateTimestamp = System.currentTimeMillis();
 
     public StateMachine(Properties props) throws IOException, HandlerRegistrationException {
         super(PROTOCOL_NAME, PROTOCOL_ID);
@@ -207,35 +208,42 @@ public class StateMachine extends GenericProtocol {
 
         if (self.equals(currentLeader)) {
             // If self is leader, doesn't need to steal the leader from himself
-            forwardedRequestsCounter = 0;
+            effectiveForwardWeigth = 0;
 
             // Send(ProposeReq(Instance, OpId, Op), ProtocolID)
             sendRequest(new ProposeRequest(nextInstance++, request.getOpId(), request.getOperation()),
                     agreementProtoId);
         } else {
             long now = System.currentTimeMillis();
+            long timePassed = now - lastUpdateTimestamp;
+
             // Should I steal now the leader?
 
-            // If pass the time to reset, then reset
-            if (now - windowStartTime > STEAL_TIME_WINDOW_MS) {
-                forwardedRequestsCounter = 0;
-                windowStartTime = now;
+            // Check if should reduce the time
+            if (timePassed >= DECAY_INTERVAL_MS) {
+                // Calculate how many decay periods pass - [RDProb]
+                int intervals = (int) (timePassed / DECAY_INTERVAL_MS);
+
+                // (exponential reducer) *= intervals ^ (DECAY_FACTOR) - [RDProb]
+                effectiveForwardWeigth *= Math.pow(DECAY_FACTOR, intervals);
+                
+                // Update time
+                lastUpdateTimestamp = now;
             }
 
-            // Inc of ops sent to leader, to steal if need to
-            forwardedRequestsCounter++;
+            // Inc Weigth of ops sent to leader, to steal if need to
+            effectiveForwardWeigth += 1.0; // New weigth more important than old weigth
 
             // Check if he should steal
-            if (forwardedRequestsCounter >= STEAL_LEADER_THRESHOLD) {
-                logger.info("High rate detected: {} requests processed in less than {} ms. Stealing the lead from {}!", 
-                            (STEAL_LEADER_THRESHOLD / STEAL_TIME_WINDOW_MS), STEAL_TIME_WINDOW_MS, currentLeader);
+            if (effectiveForwardWeigth >= STEAL_THRESHOLD) {
+                logger.info("Order volume (Rate: {}) is very high. Trying *kindly* taking the leader.", 
+                            String.format("%.2f", effectiveForwardWeigth));
                 
                 // Req to Agreement to Steal Leader
                 sendRequest(new StealLeaderRequest(), agreementProtoId);
                 
                 // Whether or not he managed to steal the lead, he's going to restart
-                forwardedRequestsCounter = 0;
-                windowStartTime = now;
+                effectiveForwardWeigth = 0; 
             }
 
             // Send(FwMsg(OpId, Op), Leader)

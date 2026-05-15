@@ -9,4 +9,11 @@ public class StealLeaderRequest extends ProtoRequest {
     public StealLeaderRequest() {
         super(REQUEST_ID);
     }
+
+    // Don't need host, because the replica is going to call for himself
+
+    @Override
+    public String toString() {
+        return "StealLeaderRequest{}";
+    }
 }
