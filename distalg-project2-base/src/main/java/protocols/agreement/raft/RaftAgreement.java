@@ -1,7 +1,33 @@
+package protocols.agreement.raft;
+
+import pt.unl.fct.di.novasys.babel.core.GenericProtocol;
+import pt.unl.fct.di.novasys.babel.exceptions.HandlerRegistrationException;
+import pt.unl.fct.di.novasys.babel.generic.ProtoMessage;
+import pt.unl.fct.di.novasys.network.data.Host;
+import protocols.agreement.messages.AppendEntriesMessage;
+import protocols.agreement.messages.AppendEntriesReplyMessage;
+import protocols.agreement.messages.RequestVoteMessage;
+import protocols.agreement.messages.RequestVoteReplyMessage;
+import protocols.agreement.notifications.JoinedNotification;
+import protocols.agreement.notifications.LeaderChangeNotification;
+import protocols.agreement.requests.AddReplicaRequest;
+import protocols.agreement.requests.ProposeRequest;
+import protocols.agreement.requests.RemoveReplicaRequest;
+import protocols.statemachine.notifications.ChannelReadyNotification;
+import protocols.statemachine.timers.ReconnectTimer;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+import java.io.IOException;
+import java.util.*;
+
 public class RaftAgreement extends GenericProtocol {
+    private static final Logger logger = LogManager.getLogger(RaftAgreement.class);
+
     public static final short PROTOCOL_ID = 100;
     public static final String PROTOCOL_NAME = "RaftAgreement";
     private Host myself;
+    private int votesReceived = 0;
     private List<Host> membership;
     private int joinedInstance = -1;
     private RaftState state;
@@ -50,14 +76,14 @@ public class RaftAgreement extends GenericProtocol {
 
     private void uponJoinedNotification(JoinedNotification notification, short sourceProto) {
         if (joinedInstance >= 0) return;
-        joinedInstance = notification.getInstance();
+        joinedInstance = notification.getJoinInstance();
         membership = notification.getMembership();
         logger.info("Joined instance {}, membership: {}", joinedInstance, membership);
         state = new RaftState();
         setupTimer(new ElectionTimeoutTimer(), randomElectionTimeout());
     }
 
-    uponElectionTimedOutout(ElectionTimeoutTimer timer, short src) {
+    private void uponElectionTimeout(ElectionTimeoutTimer timer, short src) {
         if (state.isLeader()) return;
         state.setCurrentTerm(state.getCurrentTerm() + 1);
         state.setRole(CANDIDATE);//mete-se em votacao
@@ -67,13 +93,13 @@ public class RaftAgreement extends GenericProtocol {
         setupTimer(new ElectionTimeoutTimer(), randomElectionTimeout());
     }
 
-    uponRequestVoteMessage(RequestVoteMessage msg, Host src, short srcProto, int channelId) {
+    private void uponRequestVoteMessage(RequestVoteMessage msg, Host src, short srcProto, int channelId) {
         if (msg.getTerm() < state.getCurrentTerm()) {//se termo for menor do que o current term, nao vota
             sendMessage(src, new RequestVoteReplyMessage(state.getCurrentTerm(), false));
             return;
         }
         if (msg.getTerm() > state.getCurrentTerm()) {//caso contratio, atualiza o term, torna-se follower e apaga vote
-            state.setRole(FOLLOWER);
+            state.setRole(RaftState.Role.FOLLOWER);
             state.setCurrentTerm(msg.getTerm());
             state.setVotedFor(null);
             triggerNotification(new LeaderChangeNotification(null));
@@ -88,7 +114,7 @@ public class RaftAgreement extends GenericProtocol {
         sendMessage(src, new RequestVoteReplyMessage(state.getCurrentTerm(), voteGranted));
     }
 
-    private void uponRequestVoteReplyMessage(RequestVoteMessage msg, Host host, short sourceProto, int channelId){
+    private void uponRequestVoteReplyMessage(RequestVoteReplyMessage msg, Host host, short sourceProto, int channelId){
         if (!state.isCandidate() || msg.getTerm() != state.getCurrentTerm()) return;
         if (msg.isVoteGranted()) {
             state.incrementVotesReceived();
@@ -96,7 +122,7 @@ public class RaftAgreement extends GenericProtocol {
                 becomeLeader();
             }
         } else if (msg.getTerm() > state.getCurrentTerm()) {
-            state.setRole(FOLLOWER);
+            state.setRole(RaftState.Role.FOLLOWER);
             state.setCurrentTerm(msg.getTerm());
             state.setVotedFor(null);
             triggerNotification(new LeaderChangeNotification(null));
@@ -110,7 +136,7 @@ public class RaftAgreement extends GenericProtocol {
     }
 
     private void becomeLeader() {
-        state.setRole(LEADER);
+        state.setRole(RaftState.Role.LEADER);
         triggerNotification(new LeaderChangeNotification(myself));
         nextIndex[peer] = lastLogIndex + 1; // Initialize nextIndex for each follower
         matchIndex[peer] = 0;
@@ -118,17 +144,38 @@ public class RaftAgreement extends GenericProtocol {
     }
 
     private void becomeFollower(){
-        state.setRole(FOLLOWER);
-        triggerNotification(new LeaderChangeNotification(knownLeaderOrNull));
-        setupTimer(new HeartbeatTimer(), randomElectionTimeout());
+        state.setRole(RaftState.Role.FOLLOWER);
+        triggerNotification(new LeaderChangeNotification(null));
+        setupTimer(new ElectionTimeoutTimer(), randomElectionTimeout());
     }
 
     private void applyCommitted() {
         while (state.lastApplied < state.commitIndex) {
             int i = state.lastApplied + 1;
-            LogEntry e = state.log.get(i);
-            triggerNotification(new DecidedNotification(i, e.opId, e.operation));
+            LogEntry e = state.getLog().get(i);
+            triggerNotification(new protocols.agreement.notifications.DecidedNotification(i, e.getOpId(), e.getOperation()));
             state.lastApplied = i;
         }
     }
+
+    private int randomElectionTimeout() {
+        return 150 + new Random().nextInt(150);
+    }
+
+    private int heartbeatInterval() {
+        return 50;
+    }
+
+    private void sendRequestToAll(ProtoMessage msg) {
+        for (Host h : membership) {
+            sendMessage(msg, h);
+        }
+    }
+
+    private void uponMsgFail(ProtoMessage msg, Host host, short destProto, Throwable throwable, int channelId) {
+        logger.error("Message {} to {} failed: {}", msg, host, throwable);
+    }
+
+    private void incrementVotesReceived() { votesReceived++; }
+    private boolean hasMajorityVotes(int n) { return votesReceived > n/2; }
 }
