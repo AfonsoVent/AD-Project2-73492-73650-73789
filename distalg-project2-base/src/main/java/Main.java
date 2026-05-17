@@ -1,13 +1,13 @@
-import pt.unl.fct.di.novasys.babel.core.Babel;
-import utils.InterfaceToIp;
+import java.util.Properties;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import protocols.agreement.IncorrectAgreement;
+
+import protocols.agreement.MultiPaxosAgreement;
 import protocols.app.HashApp;
 import protocols.statemachine.StateMachine;
-
-import java.util.Properties;
+import pt.unl.fct.di.novasys.babel.core.Babel;
+import utils.InterfaceToIp;
 
 
 public class Main {
@@ -46,19 +46,17 @@ public class Main {
         // StateMachine Protocol
         StateMachine sm = new StateMachine(props);
         // Agreement Protocol
-        IncorrectAgreement agreement = new IncorrectAgreement(props);
-
+        //IncorrectAgreement agreement = new IncorrectAgreement(props);
+        MultiPaxosAgreement agreement = new MultiPaxosAgreement(props);
         //Register applications in babel
         babel.registerProtocol(hashApp);
         babel.registerProtocol(sm);
-        babel.registerProtocol(agreement);
-
+        babel.registerProtocol(agreement); 
         //Init the protocols. This should be done after creating all protocols,
         // since there can be inter-protocol communications in this step.
         hashApp.init(props);
         sm.init(props);
         agreement.init(props);
-
         //Start babel and protocol threads
         babel.start();
 

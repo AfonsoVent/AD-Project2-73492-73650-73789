@@ -1,21 +1,24 @@
 package protocols.agreement;
 
+import java.io.IOException;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Properties;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 import protocols.agreement.messages.BroadcastMessage;
+import protocols.agreement.notifications.DecidedNotification;
 import protocols.agreement.notifications.JoinedNotification;
 import protocols.agreement.requests.AddReplicaRequest;
+import protocols.agreement.requests.ProposeRequest;
 import protocols.agreement.requests.RemoveReplicaRequest;
+import protocols.statemachine.notifications.ChannelReadyNotification;
 import pt.unl.fct.di.novasys.babel.core.GenericProtocol;
 import pt.unl.fct.di.novasys.babel.exceptions.HandlerRegistrationException;
 import pt.unl.fct.di.novasys.babel.generic.ProtoMessage;
 import pt.unl.fct.di.novasys.network.data.Host;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
-import protocols.statemachine.notifications.ChannelReadyNotification;
-import protocols.agreement.notifications.DecidedNotification;
-import protocols.agreement.requests.ProposeRequest;
-
-import java.io.IOException;
-import java.util.*;
 
 /**
  * This is NOT a correct agreement protocol (it is actually a VERY wrong one)
