@@ -1,13 +1,9 @@
 package protocols.agreement.raft.messages;
 
+import io.netty.buffer.ByteBuf;
 import pt.unl.fct.di.novasys.babel.generic.ProtoMessage;
 import pt.unl.fct.di.novasys.network.ISerializer;
-import java.io.IOException;
 
-/**
- * AppendEntries Reply message
- * Response to AppendEntries RPC
- */
 public class AppendEntriesReplyMessage extends ProtoMessage {
 
     public static final short MSG_ID = 1002;
@@ -37,14 +33,15 @@ public class AppendEntriesReplyMessage extends ProtoMessage {
 
     public static final ISerializer<AppendEntriesReplyMessage> serializer = new ISerializer<AppendEntriesReplyMessage>() {
         @Override
-        public void serialize(AppendEntriesReplyMessage msg, pt.unl.fct.di.novasys.network.data.IMutableBuffer out) throws IOException {
-            // TODO: Implement serialization
+        public void serialize(AppendEntriesReplyMessage msg, ByteBuf out) {
+            out.writeInt(msg.term);
+            out.writeBoolean(msg.success);
+            out.writeInt(msg.matchIndex);
         }
 
         @Override
-        public AppendEntriesReplyMessage deserialize(pt.unl.fct.di.novasys.network.data.ImmutableBuffer in) throws IOException {
-            // TODO: Implement deserialization
-            return null;
+        public AppendEntriesReplyMessage deserialize(ByteBuf in) {
+            return new AppendEntriesReplyMessage(in.readInt(), in.readBoolean(), in.readInt());
         }
     };
 
@@ -57,4 +54,3 @@ public class AppendEntriesReplyMessage extends ProtoMessage {
                 '}';
     }
 }
-

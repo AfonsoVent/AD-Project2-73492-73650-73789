@@ -1,23 +1,24 @@
 package protocols.agreement.raft.messages;
 
+import io.netty.buffer.ByteBuf;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import pt.unl.fct.di.novasys.babel.generic.ProtoMessage;
 import pt.unl.fct.di.novasys.network.ISerializer;
-import java.io.IOException;
+import pt.unl.fct.di.novasys.network.data.Host;
+import protocols.agreement.raft.utils.RaftSerialization;
 
-/**
- * RequestVote RPC message
- * Used by candidates to request votes for leader election
- */
 public class RequestVoteMessage extends ProtoMessage {
 
     public static final short MSG_ID = 1003;
+    private static final Logger logger = LogManager.getLogger(RequestVoteMessage.class);
 
     private final int term;
-    private final int candidateId;
+    private final Host candidateId;
     private final int lastLogIndex;
     private final int lastLogTerm;
 
-    public RequestVoteMessage(int term, int candidateId, int lastLogIndex, int lastLogTerm) {
+    public RequestVoteMessage(int term, Host candidateId, int lastLogIndex, int lastLogTerm) {
         super(MSG_ID);
         this.term = term;
         this.candidateId = candidateId;
@@ -29,7 +30,7 @@ public class RequestVoteMessage extends ProtoMessage {
         return term;
     }
 
-    public int getCandidateId() {
+    public Host getCandidateId() {
         return candidateId;
     }
 
@@ -43,14 +44,25 @@ public class RequestVoteMessage extends ProtoMessage {
 
     public static final ISerializer<RequestVoteMessage> serializer = new ISerializer<RequestVoteMessage>() {
         @Override
-        public void serialize(RequestVoteMessage msg, pt.unl.fct.di.novasys.network.data.IMutableBuffer out) throws IOException {
-            // TODO: Implement serialization
+        public void serialize(RequestVoteMessage msg, ByteBuf out) {
+            out.writeInt(msg.term);
+            RaftSerialization.writeHost(out, msg.candidateId);
+            out.writeInt(msg.lastLogIndex);
+            out.writeInt(msg.lastLogTerm);
         }
 
         @Override
-        public RequestVoteMessage deserialize(pt.unl.fct.di.novasys.network.data.ImmutableBuffer in) throws IOException {
-            // TODO: Implement deserialization
-            return null;
+        public RequestVoteMessage deserialize(ByteBuf in) {
+            try {
+                int term = in.readInt();
+                Host candidate = RaftSerialization.readHost(in);
+                int lastLogIndex = in.readInt();
+                int lastLogTerm = in.readInt();
+                return new RequestVoteMessage(term, candidate, lastLogIndex, lastLogTerm);
+            } catch (Exception e) {
+                logger.error("Failed to deserialize RequestVoteMessage", e);
+                return null;
+            }
         }
     };
 
@@ -64,4 +76,3 @@ public class RequestVoteMessage extends ProtoMessage {
                 '}';
     }
 }
-

@@ -1,13 +1,9 @@
 package protocols.agreement.raft.messages;
 
+import io.netty.buffer.ByteBuf;
 import pt.unl.fct.di.novasys.babel.generic.ProtoMessage;
 import pt.unl.fct.di.novasys.network.ISerializer;
-import java.io.IOException;
 
-/**
- * RequestVote Reply message
- * Response to RequestVote RPC
- */
 public class RequestVoteReplyMessage extends ProtoMessage {
 
     public static final short MSG_ID = 1004;
@@ -31,14 +27,14 @@ public class RequestVoteReplyMessage extends ProtoMessage {
 
     public static final ISerializer<RequestVoteReplyMessage> serializer = new ISerializer<RequestVoteReplyMessage>() {
         @Override
-        public void serialize(RequestVoteReplyMessage msg, pt.unl.fct.di.novasys.network.data.IMutableBuffer out) throws IOException {
-            // TODO: Implement serialization
+        public void serialize(RequestVoteReplyMessage msg, ByteBuf out) {
+            out.writeInt(msg.term);
+            out.writeBoolean(msg.voteGranted);
         }
 
         @Override
-        public RequestVoteReplyMessage deserialize(pt.unl.fct.di.novasys.network.data.ImmutableBuffer in) throws IOException {
-            // TODO: Implement deserialization
-            return null;
+        public RequestVoteReplyMessage deserialize(ByteBuf in) {
+            return new RequestVoteReplyMessage(in.readInt(), in.readBoolean());
         }
     };
 
@@ -50,4 +46,3 @@ public class RequestVoteReplyMessage extends ProtoMessage {
                 '}';
     }
 }
-

@@ -1,27 +1,30 @@
 package protocols.agreement.raft.messages;
 
+import io.netty.buffer.ByteBuf;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import pt.unl.fct.di.novasys.babel.generic.ProtoMessage;
 import pt.unl.fct.di.novasys.network.ISerializer;
-import java.io.IOException;
+import pt.unl.fct.di.novasys.network.data.Host;
+import protocols.agreement.raft.utils.LogEntry;
+import protocols.agreement.raft.utils.RaftSerialization;
+
 import java.util.List;
 
-/**
- * AppendEntries RPC message
- * Used by leader to replicate log entries and send heartbeats
- */
 public class AppendEntriesMessage extends ProtoMessage {
 
     public static final short MSG_ID = 1001;
+    private static final Logger logger = LogManager.getLogger(AppendEntriesMessage.class);
 
     private final int term;
-    private final int leaderId;
+    private final Host leaderId;
     private final int prevLogIndex;
     private final int prevLogTerm;
-    private final List<byte[]> entries;
+    private final List<LogEntry> entries;
     private final int leaderCommit;
 
-    public AppendEntriesMessage(int term, int leaderId, int prevLogIndex, int prevLogTerm, 
-                               List<byte[]> entries, int leaderCommit) {
+    public AppendEntriesMessage(int term, Host leaderId, int prevLogIndex, int prevLogTerm,
+                                List<LogEntry> entries, int leaderCommit) {
         super(MSG_ID);
         this.term = term;
         this.leaderId = leaderId;
@@ -35,7 +38,7 @@ public class AppendEntriesMessage extends ProtoMessage {
         return term;
     }
 
-    public int getLeaderId() {
+    public Host getLeaderId() {
         return leaderId;
     }
 
@@ -47,7 +50,7 @@ public class AppendEntriesMessage extends ProtoMessage {
         return prevLogTerm;
     }
 
-    public List<byte[]> getEntries() {
+    public List<LogEntry> getEntries() {
         return entries;
     }
 
@@ -57,14 +60,29 @@ public class AppendEntriesMessage extends ProtoMessage {
 
     public static final ISerializer<AppendEntriesMessage> serializer = new ISerializer<AppendEntriesMessage>() {
         @Override
-        public void serialize(AppendEntriesMessage msg, pt.unl.fct.di.novasys.network.data.IMutableBuffer out) throws IOException {
-            // TODO: Implement serialization
+        public void serialize(AppendEntriesMessage msg, ByteBuf out) {
+            out.writeInt(msg.term);
+            RaftSerialization.writeHost(out, msg.leaderId);
+            out.writeInt(msg.prevLogIndex);
+            out.writeInt(msg.prevLogTerm);
+            RaftSerialization.writeLogEntries(out, msg.entries);
+            out.writeInt(msg.leaderCommit);
         }
 
         @Override
-        public AppendEntriesMessage deserialize(pt.unl.fct.di.novasys.network.data.ImmutableBuffer in) throws IOException {
-            // TODO: Implement deserialization
-            return null;
+        public AppendEntriesMessage deserialize(ByteBuf in) {
+            try {
+                int term = in.readInt();
+                Host leader = RaftSerialization.readHost(in);
+                int prevLogIndex = in.readInt();
+                int prevLogTerm = in.readInt();
+                List<LogEntry> entries = RaftSerialization.readLogEntries(in);
+                int leaderCommit = in.readInt();
+                return new AppendEntriesMessage(term, leader, prevLogIndex, prevLogTerm, entries, leaderCommit);
+            } catch (Exception e) {
+                logger.error("Failed to deserialize AppendEntriesMessage", e);
+                return null;
+            }
         }
     };
 
@@ -80,4 +98,3 @@ public class AppendEntriesMessage extends ProtoMessage {
                 '}';
     }
 }
-
