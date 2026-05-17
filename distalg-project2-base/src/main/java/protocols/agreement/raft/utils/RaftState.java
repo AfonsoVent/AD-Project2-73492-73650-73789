@@ -1,47 +1,40 @@
 package protocols.agreement.raft.utils;
 
 import pt.unl.fct.di.novasys.network.data.Host;
+
 import java.util.*;
 
-/**
- * Persistent RAFT state
- * Should be stored on disk for recovery
- */
 public class RaftState {
 
-    // Persistent state (on all servers)
-    private int currentTerm;           // Latest term server has seen
-    private Host votedFor;             // Candidate received vote in current term
-    private List<LogEntry> log;        // Log entries
+    private int currentTerm;
+    private Host votedFor;
+    private final List<LogEntry> log;
 
-    // Volatile state (on all servers)
-    private int commitIndex;           // Highest log index known to be committed
-    private int lastApplied;           // Highest log index applied to state machine
+    private int commitIndex;
+    private int lastApplied;
 
-    // Volatile state (on leaders only)
-    private Map<Host, Integer> nextIndex;  // Next log index to send to each server
-    private Map<Host, Integer> matchIndex; // Highest log index known to be replicated on server
+    private final Map<Host, Integer> nextIndex;
+    private final Map<Host, Integer> matchIndex;
 
-    // Server role
     public enum ServerRole {
         FOLLOWER,
         CANDIDATE,
         LEADER
     }
+
     private ServerRole role;
 
     public RaftState() {
         this.currentTerm = 0;
         this.votedFor = null;
         this.log = new ArrayList<>();
-        this.commitIndex = 0;
-        this.lastApplied = 0;
+        this.commitIndex = -1;
+        this.lastApplied = -1;
         this.nextIndex = new HashMap<>();
         this.matchIndex = new HashMap<>();
         this.role = ServerRole.FOLLOWER;
     }
 
-    // Getters and setters for persistent state
     public int getCurrentTerm() {
         return currentTerm;
     }
@@ -62,11 +55,62 @@ public class RaftState {
         return log;
     }
 
-    public void addLogEntry(LogEntry entry) {
-        this.log.add(entry);
+    public LogEntry getEntryAt(int index) {
+        if (index < 0 || index >= log.size()) {
+            return null;
+        }
+        return log.get(index);
     }
 
-    // Getters and setters for volatile state
+    public int getLastLogIndex() {
+        return log.isEmpty() ? -1 : log.size() - 1;
+    }
+
+    public int getLastLogTerm() {
+        if (log.isEmpty()) {
+            return 0;
+        }
+        return log.get(log.size() - 1).getTerm();
+    }
+
+    public boolean isLogUpToDate(int candidateLastLogIndex, int candidateLastLogTerm) {
+        int myLastTerm = getLastLogTerm();
+        if (candidateLastLogTerm != myLastTerm) {
+            return candidateLastLogTerm > myLastTerm;
+        }
+        return candidateLastLogIndex >= getLastLogIndex();
+    }
+
+    public LogEntry appendEntry(int index, int term, UUID opId, byte[] operation) {
+        LogEntry entry = new LogEntry(term, index, opId, operation);
+        if (index < log.size()) {
+            log.set(index, entry);
+        } else {
+            log.add(entry);
+        }
+        return entry;
+    }
+
+    public void truncateLogFrom(int fromIndex) {
+        if (fromIndex < 0) {
+            return;
+        }
+        while (log.size() > fromIndex) {
+            log.remove(log.size() - 1);
+        }
+    }
+
+    public List<LogEntry> getEntriesFrom(int fromIndex) {
+        List<LogEntry> entries = new ArrayList<>();
+        if (fromIndex < 0) {
+            fromIndex = 0;
+        }
+        for (int i = fromIndex; i < log.size(); i++) {
+            entries.add(log.get(i));
+        }
+        return entries;
+    }
+
     public int getCommitIndex() {
         return commitIndex;
     }
@@ -83,24 +127,24 @@ public class RaftState {
         this.lastApplied = index;
     }
 
-    // Leader state
     public Map<Host, Integer> getNextIndex() {
         return nextIndex;
-    }
-
-    public void initializeLeaderState(List<Host> peers) {
-        int logSize = log.isEmpty() ? 1 : log.size() + 1;
-        for (Host peer : peers) {
-            nextIndex.put(peer, logSize);
-            matchIndex.put(peer, 0);
-        }
     }
 
     public Map<Host, Integer> getMatchIndex() {
         return matchIndex;
     }
 
-    // Role management
+    public void initializeLeaderState(Collection<Host> peers) {
+        nextIndex.clear();
+        matchIndex.clear();
+        int next = getLastLogIndex() + 1;
+        for (Host peer : peers) {
+            nextIndex.put(peer, next);
+            matchIndex.put(peer, -1);
+        }
+    }
+
     public ServerRole getRole() {
         return role;
     }
@@ -133,4 +177,3 @@ public class RaftState {
                 '}';
     }
 }
-
