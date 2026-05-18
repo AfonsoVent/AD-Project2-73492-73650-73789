@@ -6,6 +6,7 @@ import org.apache.logging.log4j.Logger;
 import protocols.agreement.IncorrectAgreement;
 import protocols.app.HashApp;
 import protocols.statemachine.StateMachine;
+import protocols.agreement.raft.*;
 
 import java.util.Properties;
 
@@ -46,7 +47,7 @@ public class Main {
         // StateMachine Protocol
         StateMachine sm = new StateMachine(props);
         // Agreement Protocol
-        IncorrectAgreement agreement = new IncorrectAgreement(props);
+        RaftAgreement agreement = new RaftAgreement(props);
 
         //Register applications in babel
         babel.registerProtocol(hashApp);
