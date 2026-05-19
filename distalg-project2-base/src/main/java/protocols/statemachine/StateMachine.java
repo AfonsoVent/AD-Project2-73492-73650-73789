@@ -171,6 +171,10 @@ public class StateMachine extends GenericProtocol {
             initialMembership.add(h);
         }
 
+        try{
+            Thread.sleep(1000);
+        }
+        finally{}
         if (initialMembership.contains(self)) {
             state = State.ACTIVE;
             logger.info("Starting in ACTIVE as I am part of initial membership");
