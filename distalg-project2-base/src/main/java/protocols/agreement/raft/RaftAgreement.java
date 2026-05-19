@@ -41,6 +41,9 @@ public class RaftAgreement extends GenericProtocol {
     private int joinedInstance = -1;
     private RaftState state;
     private int votesReceived;
+    private int channelId = -1;
+    private long consecutiveFailedElections = 0;
+    private long lastFailedElectionTime = 0;
 
     public RaftAgreement(Properties props) throws IOException, HandlerRegistrationException {
         super(PROTOCOL_NAME, PROTOCOL_ID);
@@ -68,6 +71,7 @@ public class RaftAgreement extends GenericProtocol {
     private void uponChannelCreated(ChannelReadyNotification notification, short sourceProto) {
         int cId = notification.getChannelId();
         myself = notification.getMyself();
+        channelId = cId;
         logger.info("Channel {} created, I am {}", cId, myself);
         registerSharedChannel(cId);
 
@@ -105,10 +109,30 @@ public class RaftAgreement extends GenericProtocol {
         if (state == null || state.isLeader()) {
             return;
         }
+        
+        // Only attempt election if we have peers to contact
+        if (peers().isEmpty()) {
+            // No peers available, wait longer before trying again
+            int waitTime = randomElectionTimeout() * 2;
+            setupTimer(new ElectionTimeoutTimer(), waitTime);
+            return;
+        }
+        
         startElection();
     }
 
     private void startElection() {
+        List<Host> peersList = peers();
+        
+        // If we have no peers, don't start election - wait for peers to join
+        if (peersList.isEmpty()) {
+            logger.debug("Cannot start election: no peers available. Will retry later.");
+            consecutiveFailedElections++;
+            resetElectionTimer();
+            return;
+        }
+        
+        consecutiveFailedElections = 0;
         state.setCurrentTerm(state.getCurrentTerm() + 1);
         state.setRole(RaftState.ServerRole.CANDIDATE);//mete-se em votacao
         state.setVotedFor(myself);//vota em si mesmo
@@ -176,7 +200,12 @@ public class RaftAgreement extends GenericProtocol {
         if (state == null || !state.isLeader()) {
             return;
         }
-        replicateToFollowers();
+        
+        // Only replicate if we have peers to replicate to
+        if (!peers().isEmpty()) {
+            replicateToFollowers();
+        }
+        
         setupTimer(new HeartbeatTimer(), HEARTBEAT_INTERVAL_MS);
     }
 
@@ -293,7 +322,12 @@ public class RaftAgreement extends GenericProtocol {
     }
 
     private void replicateToFollowers() {
-        for (Host peer : peers()) {
+        List<Host> peersList = peers();
+        if (peersList.isEmpty()) {
+            logger.debug("No peers available for replication. Skipping replication round.");
+            return;
+        }
+        for (Host peer : peersList) {
             sendAppendEntries(peer);
         }
     }
@@ -389,7 +423,12 @@ public class RaftAgreement extends GenericProtocol {
     }
 
     private void sendToPeers(ProtoMessage msg) {
-        for (Host peer : peers()) {
+        List<Host> peersList = peers();
+        if (peersList.isEmpty()) {
+            logger.debug("No peers to send message to. Skipping broadcast.");
+            return;
+        }
+        for (Host peer : peersList) {
             sendMessage(msg, peer);
         }
     }
@@ -407,6 +446,11 @@ public class RaftAgreement extends GenericProtocol {
     }
 
     private void uponMsgFail(ProtoMessage msg, Host host, short destProto, Throwable throwable, int channelId) {
-        logger.error("Message {} to {} failed: {}", msg, host, throwable);
+        // Only log at debug level to reduce noise when connections aren't available yet
+        if (throwable.getMessage() != null && throwable.getMessage().contains("No outgoing connection")) {
+            logger.debug("Cannot send message to {}: no connection available yet", host);
+        } else {
+            logger.error("Message {} to {} failed: {}", msg, host, throwable);
+        }
     }
 }
