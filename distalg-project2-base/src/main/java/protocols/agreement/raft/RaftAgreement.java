@@ -446,21 +446,11 @@ public class RaftAgreement extends GenericProtocol {
     }
 
     private void uponMsgFail(ProtoMessage msg, Host host, short destProto, Throwable throwable, int channelId) {
-        logger.error("Message {} to {} failed: {}", msg.getClass().getSimpleName(), host, throwable.getMessage());
-
-        // Check for Connection reset or Native IO issues
-        if (throwable instanceof io.netty.channel.unix.Errors.NativeIoException
-                || throwable.getMessage().contains("Connection reset")
-                || throwable.getMessage().contains("DEAD")) {
-
-            logger.warn("Channel to {} is DEAD or reset. Forcing channel cleanup...", host);
-
-            // Inform your State Machine or Babel's channel manager to close the connection
-            // completely before trying to open it again.
-            closeConnection(host);
-
-            // Give it a tiny moment or defer the reconnection attempt so you don't spam the OS loop
-            openConnection(host);
+        // Only log at debug level to reduce noise when connections aren't available yet
+        if (throwable.getMessage() != null && throwable.getMessage().contains("No outgoing connection")) {
+            logger.debug("Cannot send message to {}: no connection available yet", host);
+        } else {
+            logger.error("Message {} to {} failed: {}", msg, host, throwable);
         }
     }
 }
