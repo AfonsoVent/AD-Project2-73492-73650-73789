@@ -1,112 +1,149 @@
 #!/bin/bash
 
-nthreads=$1
-payload=$2
-readsper=$3
-writesper=$4
-processes=$5   # number of server nodes / cluster nodes used
+# =========================================================
+# Arguments
+# =========================================================
+processes=$1
+nthreads=$2
+payload=$3
+readsper=$4
+writesper=$5
 
 shift 5
 
-nodes=("charmander-5" "oddish-1" "bulbasaur-3")
+nodes_csv=$1
+shift 1
 
-babelport=34000
-base_server_port=35000
+if [ -z "$processes" ] || \
+   [ -z "$nthreads" ] || \
+   [ -z "$payload" ] || \
+   [ -z "$nodes_csv" ] || \
+   [ -z "$readsper" ] || \
+   [ -z "$writesper" ]; then
 
-if [ -z "$nthreads" ] || [ -z "$payload" ] || [ -z "$readsper" ] || [ -z "$writesper" ] || [ -z "$processes" ]; then
-  echo "Usage: $0 nthreads payload reads writes processes [extra YCSB args]"
+  echo "Usage:"
+  echo "$0 processes threads payload readProp writeProp node1,node2,node3"
   exit 1
 fi
 
-if [ "$processes" -gt "${#nodes[@]}" ]; then
-  echo "Not enough nodes available"
+# =========================================================
+# Parse nodes
+# =========================================================
+IFS=',' read -ra NODES <<< "$nodes_csv"
+
+if [ "$processes" -gt "${#NODES[@]}" ]; then
+  echo "Not enough nodes provided"
   exit 1
 fi
 
-############################
-# Build membership string
-############################
+# =========================================================
+# Build memberships
+# =========================================================
+membership=""
+client_hosts=""
 
-membership="${nodes[0]}:${babelport}"
+for ((i=0; i<processes; i++)); do
 
-i=1
-while [ $i -lt $processes ]; do
-  membership="${membership},${nodes[$i]}:$((babelport + i))"
-  i=$((i + 1))
+  node=${NODES[$i]}
+
+  ip=$(ssh $node "hostname -I | awk '{print \$1}'")
+
+  babel_port=$((34000 + i))
+  server_port=$((35000 + i))
+
+  if [ -z "$membership" ]; then
+    membership="${ip}:${babel_port}"
+    client_hosts="${ip}:${server_port}"
+  else
+    membership="${membership},${ip}:${babel_port}"
+    client_hosts="${client_hosts},${ip}:${server_port}"
+  fi
+
 done
 
-echo "Membership: $membership"
+echo "RAFT MEMBERSHIP:"
+echo "$membership"
+echo
+echo "CLIENT HOSTS:"
+echo "$client_hosts"
+echo
 
 read -p "Press ENTER to start servers..."
 
-############################
+# =========================================================
 # START SERVERS
-############################
+# =========================================================
+for ((i=0; i<processes; i++)); do
 
-i=0
-while [ $i -lt $processes ]; do
-  node=${nodes[$i]}
+  node=${NODES[$i]}
+  ip=$(ssh $node "hostname -I | awk '{print \$1}'")
+
+  babel_port=$((34000 + i))
+  server_port=$((35000 + i))
 
   ssh $node "
-    mkdir -p ~/logs &&
-    cd ~/server &&
-    nohup java -Xms512m -Xmx2g \
-      -DlogFilename=logs/node$((babelport + i)) \
+    mkdir -p ~/logs
+    cd ~/AD-Project2-73492-73650-73789/distalg-project2-base
+
+    nohup java \
+      -Xms512m -Xmx2g \
+      -Djava.net.preferIPv4Stack=true \
+      -DlogFilename=logs/node_${babel_port} \
       -cp target/DistAlg.jar Main \
-      babel.address=$node \
-      babel.port=$((babelport + i)) \
-      server_port=$((base_server_port + i)) \
-      initial_membership='$membership' \
-      > ~/logs/server_$node.log 2>&1 &
+      babel.address=${ip} \
+      babel.port=${babel_port} \
+      server_port=${server_port} \
+      initial_membership='${membership}' \
+      > ~/logs/server_${node}.log 2>&1 &
   "
 
-  echo "Started server on $node"
-  sleep 1
-  i=$((i + 1))
+  echo "Started server on $node ($ip)"
+  sleep 2
+
 done
 
-sleep 5
+echo "Waiting for cluster..."
+sleep 15
 
-############################
-# START YCSB CLIENTS
-############################
+# =========================================================
+# START CLIENTS
+# =========================================================
+for ((i=0; i<processes; i++)); do
 
-echo "Starting YCSB clients..."
-
-i=0
-while [ $i -lt $processes ]; do
-  node=${nodes[$i]}
+  node=${NODES[$i]}
 
   ssh $node "
-    cd ~/client &&
-    nohup java -Dlog4j.configurationFile=log4j2.xml \
-      -DlogFilename=client_$node.log \
-      -cp asd-client.jar site.ycsb.Client \
-      -t -s -P config.properties \
-      -threads $nthreads \
-      -p fieldlength=$payload \
-      -p hosts='$membership' \
-      -p readproportion=$readsper \
-      -p updateproportion=$writesper \
-      $@ \
-      > ~/logs/client_$node.out 2>&1 &
+    mkdir -p ~/logs
+    cd ~/AD-Project2-73492-73650-73789/distalg-project2-base/client
+
+    nohup java \
+      -Dlog4j.configurationFile=log4j2.xml \
+      -DlogFilename=client_${node}.log \
+      -cp asd-client.jar \
+      site.ycsb.Client \
+      -t -s \
+      -P config.properties \
+      -threads ${nthreads} \
+      -p fieldlength=${payload} \
+      -p hosts='${client_hosts}' \
+      -p readproportion=${readsper} \
+      -p updateproportion=${writesper} \
+      > ~/logs/client_${node}.log 2>&1 &
   "
 
-  echo "Started YCSB on $node"
+  echo "Started client on $node"
   sleep 1
-  i=$((i + 1))
+
 done
 
-echo "All servers and clients started."
+echo
+echo "SYSTEM RUNNING"
+echo
 
-############################
-# WAIT / STOP SECTION
-############################
+read -p "Press ENTER to STOP everything..."
 
-read -p "Press ENTER to kill everything..."
-
-for node in "${nodes[@]}"; do
-  ssh $node "pkill -f DistAlg.jar; pkill -f site.ycsb.Client"
+for node in "${NODES[@]}"; do
+  ssh $node "pkill -f DistAlg.jar || true; pkill -f site.ycsb.Client || true"
 done
 
-echo "All processes terminated."
+echo "Stopped."
