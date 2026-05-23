@@ -1,5 +1,6 @@
 package protocols.agreement.multiPaxos.utils;
 
+import java.io.Serializable;
 import java.util.UUID;
 
 import io.netty.buffer.ByteBuf;
@@ -9,7 +10,8 @@ import pt.unl.fct.di.novasys.network.ISerializer;
  * Ballot identifier used for Paxos ballots.
  * A ballot is a pair (counter, proposerId) and supports comparison.
  */
-public final class Ballot implements Comparable<Ballot> {
+public final class Ballot implements Comparable<Ballot>, Serializable {
+    private static final long serialVersionUID = 1L;
     private final long counter;
     private final UUID proposer;
 
