@@ -8,7 +8,8 @@ public class RaftState {
 
     private int currentTerm;
     private Host votedFor;
-    private final List<LogEntry> log;
+    private final ArrayDeque<LogEntry> log;
+    private int logStartIndex = 0;
 
     private int commitIndex;
     private int lastApplied;
@@ -83,12 +84,11 @@ public class RaftState {
 
     /** Drop applied entries from memory; keep a tail for replication. */
     public void compactAppliedLog(int lastAppliedIndex, int keepEntries) {
-        if (lastAppliedIndex < keepEntries || log.isEmpty()) {
-            return;
-        }
+        if (log.isEmpty()) return;
         int removeThrough = lastAppliedIndex - keepEntries;
-        while (!log.isEmpty() && log.get(0).getIndex() <= removeThrough) {
-            log.remove(0);
+        while (!log.isEmpty() && log.peekFirst().getIndex() <= removeThrough) {
+            log.pollFirst();
+            logStartIndex++;
         }
     }
 
@@ -128,10 +128,11 @@ public class RaftState {
 
     public List<LogEntry> getEntriesFrom(int fromIndex) {
         List<LogEntry> entries = new ArrayList<>();
-        for (LogEntry entry : log) {
-            if (entry.getIndex() >= fromIndex) {
-                entries.add(entry);
-            }
+        int offset = fromIndex - logStartIndex;
+        if (offset < 0) offset = 0;
+        LogEntry[] arr = log.toArray(new LogEntry[0]);
+        for (int i = offset; i < arr.length; i++) {
+            entries.add(arr[i]);
         }
         return entries;
     }
