@@ -1,34 +1,47 @@
 package protocols.agreement.messages;
 
-import pt.unl.fct.di.novasys.babel.generic.ProtoMessage;
+import java.io.IOException;
+
 import io.netty.buffer.ByteBuf;
+import protocols.agreement.utils.Ballot;
+import pt.unl.fct.di.novasys.babel.generic.ProtoMessage;
 import pt.unl.fct.di.novasys.network.ISerializer;
 
 public class AcceptOKMessage extends ProtoMessage {
     public static final short MSG_ID = 106;
 
-    private final int term;
+    private final Ballot ballot;
     private final int instance;
 
-    public AcceptOKMessage(int term, int instance) {
+    public AcceptOKMessage(Ballot ballot, int instance) {
         super(MSG_ID);
-        this.term = term;
+        this.ballot = ballot;
         this.instance = instance;
     }
 
-    public int getTerm() {return term;}
-    public int getInstance() {return instance;}
+    public Ballot getBallot() { return ballot; }
+    public int getInstance() { return instance; }
 
     public static ISerializer<AcceptOKMessage> serializer = new ISerializer<>() {
         @Override
         public void serialize(AcceptOKMessage msg, ByteBuf out) {
-            out.writeInt(msg.term);
-            out.writeInt(msg.instance);
+            try {
+                Ballot.serializer.serialize(msg.ballot, out);
+                out.writeInt(msg.instance);
+            } catch (IOException e) {
+                throw new RuntimeException("Error serializing AcceptOKMessage", e);
+            }
         }
 
         @Override
         public AcceptOKMessage deserialize(ByteBuf in) {
-            return new AcceptOKMessage(in.readInt(), in.readInt());
+            try {
+                Ballot ballot = Ballot.serializer.deserialize(in);
+                int instance = in.readInt();
+                return new AcceptOKMessage(ballot, instance);
+            } catch (IOException e) {
+                throw new RuntimeException("Error deserializing AcceptOKMessage", e);
+            }
         }
     };
 }
