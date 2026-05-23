@@ -137,6 +137,8 @@ public class RaftAgreement extends GenericProtocol {
         state.setRole(RaftState.ServerRole.CANDIDATE);//mete-se em votacao
         state.setVotedFor(myself);//vota em si mesmo
         votesReceived = 1;
+        logger.info("Starting election for term {} (membership size={}, peers={})", state.getCurrentTerm(),
+                membership == null ? 0 : membership.size(), peersList);
         triggerNotification(new LeaderChangeNotification(null));
 
         RequestVoteMessage msg = new RequestVoteMessage(
@@ -157,6 +159,8 @@ public class RaftAgreement extends GenericProtocol {
         if (state == null) {
             return;
         }
+        logger.debug("Received RequestVote from {} for term {} (candidate lastLogIndex={}, lastLogTerm={})",
+                src, msg.getTerm(), msg.getLastLogIndex(), msg.getLastLogTerm());
         if (msg.getTerm() < state.getCurrentTerm()) {//se termo for menor do que o current term, nao vota
             sendMessage(new RequestVoteReplyMessage(state.getCurrentTerm(), false), src);
             return;
@@ -171,6 +175,7 @@ public class RaftAgreement extends GenericProtocol {
             state.setVotedFor(msg.getCandidateId());
             voteGranted = true;
             resetElectionTimer();
+            logger.info("Granted vote to {} for term {}", msg.getCandidateId(), msg.getTerm());
         }
 
         sendMessage(new RequestVoteReplyMessage(state.getCurrentTerm(), voteGranted), src);
@@ -191,7 +196,9 @@ public class RaftAgreement extends GenericProtocol {
         }
 
         votesReceived++;
+        logger.info("Received vote reply from {} (term={}, granted={}), votes now {}/{}", host, msg.getTerm(), msg.isVoteGranted(), votesReceived, membership == null ? 0 : membership.size());
         if (hasMajorityVotes()) {
+            logger.info("Achieved majority votes ({}/{}) for term {} - becoming leader", votesReceived, membership == null ? 0 : membership.size(), state.getCurrentTerm());
             becomeLeader();
         }
     }
@@ -213,6 +220,7 @@ public class RaftAgreement extends GenericProtocol {
         if (state == null) {
             return;
         }
+        logger.debug("AppendEntries from {} term={} prevIndex={} prevTerm={} entries={} leaderCommit={}", src, msg.getTerm(), msg.getPrevLogIndex(), msg.getPrevLogTerm(), msg.getEntries() == null ? 0 : msg.getEntries().size(), msg.getLeaderCommit());
 
         if (msg.getTerm() < state.getCurrentTerm()) {
             sendMessage(new AppendEntriesReplyMessage(state.getCurrentTerm(), false, -1), src);
@@ -305,6 +313,7 @@ public class RaftAgreement extends GenericProtocol {
 
     private void becomeLeader() {
         state.setRole(RaftState.ServerRole.LEADER);
+        logger.info("Triggering LeaderChangeNotification (new leader={})", myself);
         triggerNotification(new LeaderChangeNotification(myself));
         state.initializeLeaderState(peers());
         logger.info("Became leader for term {}", state.getCurrentTerm());
@@ -317,6 +326,7 @@ public class RaftAgreement extends GenericProtocol {
         state.setCurrentTerm(newTerm);
         state.setVotedFor(null);
         votesReceived = 0;
+        logger.info("Becoming follower for term {} (clearing leader)", newTerm);
         triggerNotification(new LeaderChangeNotification(null));
         resetElectionTimer();
     }
@@ -356,8 +366,9 @@ public class RaftAgreement extends GenericProtocol {
     }
 
     private boolean logMatches(int prevLogIndex, int prevLogTerm) {
+        // If prevLogIndex < 0 it means there's no previous entry and it should match
         if (prevLogIndex < 0) {
-            return state.getLog().isEmpty();
+            return true;
         }
         LogEntry entry = state.getEntryAt(prevLogIndex);
         return entry != null && entry.getTerm() == prevLogTerm;
@@ -442,7 +453,7 @@ public class RaftAgreement extends GenericProtocol {
     }
 
     private int randomElectionTimeout() {
-        return ELECTION_TIMEOUT_MIN_MS + new Random().nextInt(ELECTION_TIMEOUT_RANGE_MS);
+        return ELECTION_TIMEOUT_MIN_MS + ThreadLocalRandom.current().nextInt(ELECTION_TIMEOUT_RANGE_MS);
     }
 
     private void uponMsgFail(ProtoMessage msg, Host host, short destProto, Throwable throwable, int channelId) {
