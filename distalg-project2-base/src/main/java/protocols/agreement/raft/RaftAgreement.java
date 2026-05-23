@@ -17,6 +17,7 @@ import protocols.agreement.requests.AddReplicaRequest;
 import java.util.concurrent.ThreadLocalRandom;
 import protocols.agreement.requests.ProposeRequest;
 import protocols.agreement.requests.RemoveReplicaRequest;
+import protocols.agreement.requests.StealLeaderRequest;
 import protocols.statemachine.notifications.ChannelReadyNotification;
 import pt.unl.fct.di.novasys.babel.core.GenericProtocol;
 import pt.unl.fct.di.novasys.babel.exceptions.HandlerRegistrationException;
@@ -33,8 +34,8 @@ public class RaftAgreement extends GenericProtocol {
     public static final short PROTOCOL_ID = 100;
     public static final String PROTOCOL_NAME = "RaftAgreement";
 
-    private static final int ELECTION_TIMEOUT_MIN_MS = 150;
-    private static final int ELECTION_TIMEOUT_RANGE_MS = 150;
+    private static final int ELECTION_TIMEOUT_MIN_MS = 300;
+    private static final int ELECTION_TIMEOUT_RANGE_MS = 300;
     private static final int HEARTBEAT_INTERVAL_MS = 50;
 
     private Host myself;
@@ -43,8 +44,12 @@ public class RaftAgreement extends GenericProtocol {
     private RaftState state;
     private int votesReceived;
     private int channelId = -1;
-    private long consecutiveFailedElections = 0;
-    private long lastFailedElectionTime = 0;
+    private long electionGeneration = 0;
+    private long heartbeatGeneration = 0;
+    private long electionTimerId = -1;
+    private long heartbeatTimerId = -1;
+    /** Last leader notified to the state machine (avoids duplicate LeaderChange notifications). */
+    private Host stateMachineLeader;
 
     public RaftAgreement(Properties props) throws IOException, HandlerRegistrationException {
         super(PROTOCOL_NAME, PROTOCOL_ID);
@@ -58,6 +63,7 @@ public class RaftAgreement extends GenericProtocol {
         registerRequestHandler(ProposeRequest.REQUEST_ID, this::uponProposeRequest);
         registerRequestHandler(AddReplicaRequest.REQUEST_ID, this::uponAddReplica);
         registerRequestHandler(RemoveReplicaRequest.REQUEST_ID, this::uponRemoveReplica);
+        registerRequestHandler(StealLeaderRequest.REQUEST_ID, this::uponStealLeaderRequest);
 
         /*--------------------- Register Notification Handlers ----------------------------- */
         subscribeNotification(ChannelReadyNotification.NOTIFICATION_ID, this::uponChannelCreated);
@@ -110,15 +116,16 @@ public class RaftAgreement extends GenericProtocol {
         if (state == null || state.isLeader()) {
             return;
         }
-        
-        // Only attempt election if we have peers to contact
-        if (peers().isEmpty()) {
-            // No peers available, wait longer before trying again
-            int waitTime = randomElectionTimeout() * 2;
-            setupTimer(new ElectionTimeoutTimer(), waitTime);
+        if (timer.getGeneration() != electionGeneration) {
             return;
         }
-        
+        electionTimerId = -1;
+
+        if (peers().isEmpty()) {
+            resetElectionTimer();
+            return;
+        }
+
         startElection();
     }
 
@@ -128,19 +135,16 @@ public class RaftAgreement extends GenericProtocol {
         // If we have no peers, don't start election - wait for peers to join
         if (peersList.isEmpty()) {
             logger.debug("Cannot start election: no peers available. Will retry later.");
-            consecutiveFailedElections++;
             resetElectionTimer();
             return;
         }
         
-        consecutiveFailedElections = 0;
         state.setCurrentTerm(state.getCurrentTerm() + 1);
-        state.setRole(RaftState.ServerRole.CANDIDATE);//mete-se em votacao
-        state.setVotedFor(myself);//vota em si mesmo
+        state.setRole(RaftState.ServerRole.CANDIDATE);
+        state.setVotedFor(myself);
         votesReceived = 1;
         logger.info("Starting election for term {} (membership size={}, peers={})", state.getCurrentTerm(),
                 membership == null ? 0 : membership.size(), peersList);
-        triggerNotification(new LeaderChangeNotification(null));
 
         RequestVoteMessage msg = new RequestVoteMessage(
                 state.getCurrentTerm(),
@@ -171,7 +175,7 @@ public class RaftAgreement extends GenericProtocol {
         }
 
         boolean voteGranted = false;
-        if ((state.getVotedFor() == null || state.getVotedFor().equals(msg.getCandidateId()))
+        if ((state.getVotedFor() == null || sameHost(state.getVotedFor(), msg.getCandidateId()))
                 && state.isLogUpToDate(msg.getLastLogIndex(), msg.getLastLogTerm())) {
             state.setVotedFor(msg.getCandidateId());
             voteGranted = true;
@@ -208,13 +212,16 @@ public class RaftAgreement extends GenericProtocol {
         if (state == null || !state.isLeader()) {
             return;
         }
-        
-        // Only replicate if we have peers to replicate to
+        if (timer.getGeneration() != heartbeatGeneration) {
+            return;
+        }
+        heartbeatTimerId = -1;
+
         if (!peers().isEmpty()) {
             replicateToFollowers();
         }
-        
-        setupTimer(new HeartbeatTimer(), HEARTBEAT_INTERVAL_MS);
+
+        resetHeartbeatTimer();
     }
 
     private void uponAppendEntriesMessage(AppendEntriesMessage msg, Host src, short srcProto, int channelId) {
@@ -236,6 +243,7 @@ public class RaftAgreement extends GenericProtocol {
                 state.setVotedFor(null);
             }
             resetElectionTimer();
+            notifyLeaderToStateMachine(msg.getLeaderId());
         }
 
         boolean success = logMatches(msg.getPrevLogIndex(), msg.getPrevLogTerm());
@@ -292,7 +300,7 @@ public class RaftAgreement extends GenericProtocol {
         }
 
         state.appendEntry(index, state.getCurrentTerm(), req.getOpId(), req.getOperation());
-        logger.debug("Leader appended instance {} opId {}", index, req.getOpId());
+        logger.info("Leader appended instance {} opId {}", index, req.getOpId());
         replicateToFollowers();
     }
 
@@ -312,23 +320,32 @@ public class RaftAgreement extends GenericProtocol {
         }
     }
 
+    private void uponStealLeaderRequest(StealLeaderRequest request, short sourceProto) {
+        // Raft elects leaders by vote; ignore steal requests from the state machine.
+        logger.debug("Ignoring StealLeaderRequest (Raft uses elections)");
+    }
+
     private void becomeLeader() {
+        cancelElectionTimer();
         state.setRole(RaftState.ServerRole.LEADER);
-        logger.info("Triggering LeaderChangeNotification (new leader={})", myself);
-        triggerNotification(new LeaderChangeNotification(myself));
+        updateStateMachineLeader(myself);
         state.initializeLeaderState(peers());
         logger.info("Became leader for term {}", state.getCurrentTerm());
         replicateToFollowers();
-        setupTimer(new HeartbeatTimer(), HEARTBEAT_INTERVAL_MS);
+        resetHeartbeatTimer();
     }
 
     private void becomeFollower(int newTerm) {
+        boolean wasLeader = state.isLeader();
+        cancelHeartbeatTimer();
         state.setRole(RaftState.ServerRole.FOLLOWER);
         state.setCurrentTerm(newTerm);
         state.setVotedFor(null);
         votesReceived = 0;
-        logger.info("Becoming follower for term {} (clearing leader)", newTerm);
-        triggerNotification(new LeaderChangeNotification(null));
+        if (wasLeader) {
+            logger.info("Becoming follower for term {} (clearing leader)", newTerm);
+            updateStateMachineLeader(null);
+        }
         resetElectionTimer();
     }
 
@@ -427,11 +444,44 @@ public class RaftAgreement extends GenericProtocol {
             return peers;
         }
         for (Host host : membership) {
-            if (!host.equals(myself)) {
+            if (!sameHost(host, myself)) {
                 peers.add(host);
             }
         }
         return peers;
+    }
+
+    private Host resolveMember(Host host) {
+        if (host == null || membership == null) {
+            return host;
+        }
+        for (Host member : membership) {
+            if (sameHost(member, host)) {
+                return member;
+            }
+        }
+        return host;
+    }
+
+    private void notifyLeaderToStateMachine(Host leader) {
+        if (leader == null || sameHost(leader, myself)) {
+            return;
+        }
+        updateStateMachineLeader(leader);
+    }
+
+    private void updateStateMachineLeader(Host leader) {
+        Host resolved = leader == null ? null : resolveMember(leader);
+        if (resolved == null && stateMachineLeader == null) {
+            return;
+        }
+        if (resolved != null && stateMachineLeader != null && sameHost(resolved, stateMachineLeader)) {
+            return;
+        }
+        Host previous = stateMachineLeader;
+        stateMachineLeader = resolved;
+        logger.info("State machine leader: {} -> {}", previous, resolved);
+        triggerNotification(new LeaderChangeNotification(resolved));
     }
 
     private void sendToPeers(ProtoMessage msg) {
@@ -450,7 +500,39 @@ public class RaftAgreement extends GenericProtocol {
     }
 
     private void resetElectionTimer() {
-        setupTimer(new ElectionTimeoutTimer(), randomElectionTimeout());
+        cancelElectionTimer();
+        electionGeneration++;
+        electionTimerId = setupTimer(new ElectionTimeoutTimer(electionGeneration), randomElectionTimeout());
+    }
+
+    private void resetHeartbeatTimer() {
+        cancelHeartbeatTimer();
+        heartbeatGeneration++;
+        heartbeatTimerId = setupTimer(new HeartbeatTimer(heartbeatGeneration), HEARTBEAT_INTERVAL_MS);
+    }
+
+    private void cancelElectionTimer() {
+        if (electionTimerId >= 0) {
+            cancelTimer(electionTimerId);
+            electionTimerId = -1;
+        }
+        electionGeneration++;
+    }
+
+    private void cancelHeartbeatTimer() {
+        if (heartbeatTimerId >= 0) {
+            cancelTimer(heartbeatTimerId);
+            heartbeatTimerId = -1;
+        }
+        heartbeatGeneration++;
+    }
+
+    private boolean sameHost(Host a, Host b) {
+        if (a == null || b == null) {
+            return false;
+        }
+        return a.getPort() == b.getPort()
+                && a.getAddress().getHostAddress().equals(b.getAddress().getHostAddress());
     }
 
     private int randomElectionTimeout() {

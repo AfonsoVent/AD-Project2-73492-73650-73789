@@ -2,26 +2,28 @@ package protocols.agreement.raft.timers;
 
 import pt.unl.fct.di.novasys.babel.generic.ProtoTimer;
 
-/**
- * Election Timeout Timer
- * Used to trigger leader election when no heartbeat is received from the leader
- */
 public class ElectionTimeoutTimer extends ProtoTimer {
 
     public static final short TIMER_ID = 2001;
 
-    public ElectionTimeoutTimer() {
+    private final long generation;
+
+    public ElectionTimeoutTimer(long generation) {
         super(TIMER_ID);
+        this.generation = generation;
+    }
+
+    public long getGeneration() {
+        return generation;
     }
 
     @Override
     public ProtoTimer clone() {
-        return this;
+        return new ElectionTimeoutTimer(generation);
     }
 
     @Override
     public String toString() {
-        return "ElectionTimeoutTimer{}";
+        return "ElectionTimeoutTimer{generation=" + generation + '}';
     }
 }
-
