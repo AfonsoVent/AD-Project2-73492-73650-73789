@@ -84,14 +84,12 @@ public class StateMachine extends GenericProtocol {
     private static final long RECONNECT_MAX_MS = 5000; // Max time to reconnect
     private final Map<Host, Long> reconnectDelay = new HashMap<>(); // Used to get the time is getting to reconnect
 
-    private final ArrayDeque<UUID> decidedQueue = new ArrayDeque<>();
-    private final Set<UUID> decidedOpIds = new HashSet<>();
+    private final Set<UUID> seenForwardedOps = new HashSet<>(); // Used to ignore duplicate ForwardOpMessage replays beacuse reconnects
+    private final Set<UUID> decidedOpIds = new HashSet<>(); // Used to ignore forwarded messages of operations already decided
 
-    private final ArrayDeque<UUID> seenQueue = new ArrayDeque<>();
-    private final Set<UUID> seenForwardedOps = new HashSet<>();
     private static final long RECONNECT_JITTER_MAX_MS = 50; // Randomness
     private static final int MAX_BUFFER_PER_PEER = 1000; // Max size of buffer
-    private static final int MAX_TRACKED_OP_IDS = 100_000;
+    private static final int MAX_TRACKED_OP_IDS = 200_000;
 
     private final short agreementProtoId; // Genreric Protocol reciever (Raft/Multi-Paxos)
 
@@ -532,28 +530,19 @@ public class StateMachine extends GenericProtocol {
     }
 
     private void trackDecidedOpId(UUID opId) {
-        if (decidedOpIds.add(opId)) {
-            decidedQueue.addLast(opId);
-
-            if (decidedQueue.size() > MAX_TRACKED_OP_IDS) {
-                UUID old = decidedQueue.pollFirst();
-                decidedOpIds.remove(old);
-            }
+        decidedOpIds.add(opId);
+        if (decidedOpIds.size() > MAX_TRACKED_OP_IDS) {
+            decidedOpIds.clear();
+            seenForwardedOps.clear();
+            logger.warn("Cleared decided/forward tracking caches (limit {}) for long-run memory protection",
+                    MAX_TRACKED_OP_IDS);
         }
     }
 
     private boolean trackSeenForwarded(UUID opId) {
-        if (!seenForwardedOps.add(opId)) {
-            return false;
+        if (seenForwardedOps.size() > MAX_TRACKED_OP_IDS) {
+            seenForwardedOps.clear();
         }
-
-        seenQueue.addLast(opId);
-
-        if (seenQueue.size() > MAX_TRACKED_OP_IDS) {
-            UUID old = seenQueue.pollFirst();
-            seenForwardedOps.remove(old);
-        }
-
-        return true;
+        return seenForwardedOps.add(opId);
     }
 }
