@@ -7,7 +7,9 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Queue;
 import java.util.Set;
+import java.util.UUID;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -22,6 +24,7 @@ import protocols.agreement.requests.ProposeRequest;
 import protocols.agreement.requests.RemoveReplicaRequest;
 import protocols.agreement.utils.Ballot;
 import protocols.agreement.utils.PaxosSlot;
+import protocols.agreement.utils.QuorumUtils;
 import protocols.statemachine.notifications.ChannelReadyNotification;
 import pt.unl.fct.di.novasys.babel.core.GenericProtocol;
 import pt.unl.fct.di.novasys.babel.exceptions.HandlerRegistrationException;
@@ -38,7 +41,8 @@ import pt.unl.fct.di.novasys.network.data.Host;
 public class MultiPaxos extends GenericProtocol {
     private static final Logger logger = LogManager.getLogger(MultiPaxos.class);
 
-    // TODO: Ballot
+    // Ballot
+    private UUID ballotOwner;
     private Ballot promisedBallot;
 
     private Ballot currentBallot; // Current number ballot
@@ -48,6 +52,7 @@ public class MultiPaxos extends GenericProtocol {
     // Phase 1
     private Set<Host> phase1Promises; // Who promised in this ballot
     private int majority;             // Size of the majority
+    private Queue<ProposeRequest> pendingProposals;
 
     // Register of the slots
     private Map<Integer, PaxosSlot> slots;
@@ -64,6 +69,8 @@ public class MultiPaxos extends GenericProtocol {
     public MultiPaxos(Properties props) throws IOException, HandlerRegistrationException {
         super(PROTOCOL_NAME, PROTOCOL_ID);
         joinedInstance = -1; //-1 means we have not yet joined the system
+        ballotOwner = UUID.randomUUID();
+        pendingProposals = new LinkedList<>();
 
         promisedBallot = null;
         membership = null;
@@ -130,7 +137,6 @@ public class MultiPaxos extends GenericProtocol {
 
         sendMessage(new PrepareOKMessage(incoming, acceptedSlots), from);
 
-
         logger.debug("Sent PrepareOK {} -> {} (acceptedSlots={})", incoming, from, acceptedSlots.size());
     }
 
@@ -155,8 +161,10 @@ public class MultiPaxos extends GenericProtocol {
 
         logger.debug("Phase1 ballot {} promises: {}/{}", currentBallot, phase1Promises.size(), majority);
 
-        // TODO: Micro function with this
-        if (phase1Promises.size() < majority) return;
+        int quorum = QuorumUtils.majority(membership.size());
+        logger.debug("Phase1 ballot {} promises: {}/{}", currentBallot, phase1Promises.size(), quorum);
+
+        if (!QuorumUtils.hasMajority(phase1Promises.size(), membership.size())) return;
 
         amILeader = true;
         currentLeader = myself;
@@ -180,7 +188,73 @@ public class MultiPaxos extends GenericProtocol {
         }
     }
 
+    private void startPhase1() {
+        if (membership == null || membership.isEmpty()) {
+            logger.debug("Cannot start Phase 1 without membership");
+            return;
+        }
 
+        if (phase1Promises == null) {
+            phase1Promises = new HashSet<>();
+        } else {
+            phase1Promises.clear();
+        }
+
+        amILeader = false;
+        currentLeader = null;
+
+        if (currentBallot == null) {
+            currentBallot = Ballot.initial(ballotOwner);
+        } else {
+            currentBallot = currentBallot.next();
+        }
+
+        logger.info("Starting Phase 1 with ballot {}", currentBallot);
+
+        PrepareMessage prepare = new PrepareMessage(currentBallot);
+        membership.forEach(host -> sendMessage(prepare, host));
+    }
+
+    private void uponJoinedNotification(JoinedNotification notification, short sourceProto) {
+        joinedInstance = notification.getJoinInstance();
+        membership = new LinkedList<>(notification.getMembership());
+
+        if (slots == null) {
+            slots = new HashMap<>();
+        }
+
+        if (phase1Promises == null) {
+            phase1Promises = new HashSet<>();
+        }
+
+        majority = QuorumUtils.majority(membership.size());
+
+        logger.info("Agreement starting at instance {}, membership: {}, majority: {}",
+                joinedInstance, membership, majority);
+
+        startPhase1();
+    }
+
+    private void uponProposeRequest(ProposeRequest request, short sourceProto) {
+        logger.debug("Received {}", request);
+
+        if (joinedInstance < 0) {
+            logger.debug("Still joining, buffering proposal {}", request.getOpId());
+            pendingProposals.add(request);
+            return;
+        }
+
+        if (!amILeader) {
+            logger.debug("Not leader yet, buffering proposal {} and starting Phase 1 if needed", request.getOpId());
+            pendingProposals.add(request);
+
+            if (currentBallot == null) startPhase1();
+            return;
+        }
+
+        // TODO: Phase 2 ficará aqui depois
+        logger.debug("I am leader, proposal {} can proceed to Accept phase", request.getOpId());
+    }
 
 
 
@@ -198,19 +272,6 @@ public class MultiPaxos extends GenericProtocol {
         }
     }
 
-    private void uponJoinedNotification(JoinedNotification notification, short sourceProto) {
-        //We joined the system and can now start doing things
-        joinedInstance = notification.getJoinInstance();
-        membership = new LinkedList<>(notification.getMembership());
-        logger.info("Agreement starting at instance {},  membership: {}", joinedInstance, membership);
-    }
-
-    private void uponProposeRequest(ProposeRequest request, short sourceProto) {
-        logger.debug("Received " + request);
-        BroadcastMessage msg = new BroadcastMessage(request.getInstance(), request.getOpId(), request.getOperation());
-        logger.debug("Sending to: " + membership);
-        membership.forEach(h -> sendMessage(msg, h));
-    }
     private void uponAddReplica(AddReplicaRequest request, short sourceProto) {
         logger.debug("Received " + request);
         //The AddReplicaRequest contains an "instance" field, which we ignore in this incorrect protocol.
