@@ -89,7 +89,7 @@ public class StateMachine extends GenericProtocol {
 
     private static final long RECONNECT_JITTER_MAX_MS = 50; // Randomness
     private static final int MAX_BUFFER_PER_PEER = 1000; // Max size of buffer
-    private static final int MAX_TRACKED_OP_IDS = 200_000;
+    private static final int MAX_TRACKED_OP_IDS = 50_000;
 
     private final short agreementProtoId; // Genreric Protocol reciever (Raft/Multi-Paxos)
 
@@ -196,67 +196,24 @@ public class StateMachine extends GenericProtocol {
     }
 
     /*--------------------------------- Requests ---------------------------------------- */
+    // In uponOrderRequest, remove the steal leader block entirely:
     private void uponOrderRequest(OrderRequest request, short sourceProto) {
-        if (state == State.JOINING) {
-            //Do something smart (like buffering the requests)
-            return;
-        } 
-        
-        if (currentLeader == null) {
-            // Add to buffer
-            waitingLeader.add(request);
+        if (state == State.JOINING) return;
 
-            logger.debug("Buffered opId {} (reason= unknow leader, waitingLeaderSize={})",
-                request.getOpId(), waitingLeader.size());
+        if (currentLeader == null) {
+            waitingLeader.add(request);
+            logger.debug("Buffered opId {} (no leader)", request.getOpId());
             return;
         }
 
-        // Local op became pending
         trackPending(request.getOpId(), request.getOperation(), self);
 
         if (self.equals(currentLeader)) {
-            // If self is leader, doesn't need to steal the leader from himself
-            effectiveForwardWeigth = 0;
-
-            // Send(ProposeReq(Instance, OpId, Op), ProtocolID)
             sendRequest(new ProposeRequest(nextInstance++, request.getOpId(), request.getOperation()),
                     agreementProtoId);
         } else {
-            long now = System.currentTimeMillis();
-            long timePassed = now - lastUpdateTimestamp;
-
-            // Should I steal now the leader?
-
-            // Check if should reduce the time
-            if (timePassed >= DECAY_INTERVAL_MS) {
-                // Calculate how many decay periods pass - [RDProb]
-                int intervals = (int) (timePassed / DECAY_INTERVAL_MS);
-
-                // (exponential reducer) *= intervals ^ (DECAY_FACTOR) - [RDProb]
-                effectiveForwardWeigth *= Math.pow(DECAY_FACTOR, intervals);
-                
-                // Update time
-                lastUpdateTimestamp = now;
-            }
-
-            // Inc Weigth of ops sent to leader, to steal if need to
-            effectiveForwardWeigth += 1.0; // New weigth more important than old weigth
-
-            // Check if he should steal
-            if (effectiveForwardWeigth >= STEAL_THRESHOLD) {
-                logger.info("Order volume (Rate: {}) is very high. Trying *kindly* taking the leader.", 
-                            String.format("%.2f", effectiveForwardWeigth));
-                
-                // Req to Agreement to Steal Leader
-                sendRequest(new StealLeaderRequest(), agreementProtoId);
-                
-                // Whether or not he managed to steal the lead, he's going to restart
-                effectiveForwardWeigth = 0; 
-            }
-
-            // Send(FwMsg(OpId, Op), Leader)
+            // Just forward, no steal logic
             sendOrBufferToHost(new ForwardOpMessage(request.getOpId(), request.getOperation()), currentLeader);
-            
             logger.debug("Forwarding opId {} to leader {}", request.getOpId(), currentLeader);
         }
     }
@@ -286,43 +243,38 @@ public class StateMachine extends GenericProtocol {
 
         tryExecuteInOrder();
     }
-    
+
     private void uponLeaderChangeNotification(LeaderChangeNotification notification, short sourceProto) {
         Host newLeader = notification.getLeaderID();
-        
-        // Ignore invalid leaders updates
+
         if (newLeader != null && !isKnownMember(newLeader)) {
-            logger.warn("Ignoring LeaderChange to non-member host {} (membership={})", newLeader, membership);
+            logger.warn("Ignoring LeaderChange to non-member {}", newLeader);
             return;
         }
 
         Host oldLeader = this.currentLeader;
         this.currentLeader = newLeader;
         logger.info("Leader changed: {} -> {}", oldLeader, newLeader);
-        
+
         if (newLeader == null) return;
 
-        // Process the "lost" Ops while the leader was unknow
         drainWaitingLeaderQueue();
 
+        // Only re-propose if we actually have pending ops AND leader changed to someone new
         if (pendingOps.isEmpty()) return;
+        if (newLeader.equals(oldLeader)) return; // no-op, same leader
 
         if (self.equals(newLeader)) {
-            // Ask for pending Operations not made it
             for (PendingOp p : pendingOps.values()) {
-                // Send(ProposeRequest(Instance, OpId, Op), ProtocolID)
                 sendRequest(
-                    new ProposeRequest(nextInstance++, p.getOpId(), p.getOperation()),
-                    agreementProtoId);
+                        new ProposeRequest(nextInstance++, p.getOpId(), p.getOperation()),
+                        agreementProtoId);
             }
         } else {
-            // Send to new leader
             for (PendingOp p : pendingOps.values()) {
-                // Send(FwMsg(OpId, Op), newLeader)
                 sendOrBufferToHost(
-                    new ForwardOpMessage(p.getOpId(), p.getOperation()),
-                    newLeader
-                );
+                        new ForwardOpMessage(p.getOpId(), p.getOperation()),
+                        newLeader);
             }
         }
     }
