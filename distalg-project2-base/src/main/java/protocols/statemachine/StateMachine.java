@@ -171,6 +171,13 @@ public class StateMachine extends GenericProtocol {
             initialMembership.add(h);
         }
 
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            // Restore the interrupted status
+            Thread.currentThread().interrupt();
+            logger.error("Thread was interrupted during initialization", e);
+        }
         if (initialMembership.contains(self)) {
             state = State.ACTIVE;
             logger.info("Starting in ACTIVE as I am part of initial membership");

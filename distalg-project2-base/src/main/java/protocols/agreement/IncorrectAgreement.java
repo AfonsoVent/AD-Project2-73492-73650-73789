@@ -8,12 +8,21 @@ import java.util.Properties;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+<<<<<<< HEAD
 import protocols.agreement.multiPaxos.messages.BroadcastMessage;
 import protocols.agreement.multiPaxos.notifications.DecidedNotification;
 import protocols.agreement.multiPaxos.notifications.JoinedNotification;
 import protocols.agreement.multiPaxos.requests.AddReplicaRequest;
 import protocols.agreement.multiPaxos.requests.ProposeRequest;
 import protocols.agreement.multiPaxos.requests.RemoveReplicaRequest;
+=======
+import protocols.agreement.messages.BroadcastMessage;
+import protocols.agreement.notifications.DecidedNotification;
+import protocols.agreement.notifications.JoinedNotification;
+import protocols.agreement.requests.AddReplicaRequest;
+import protocols.agreement.requests.ProposeRequest;
+import protocols.agreement.requests.RemoveReplicaRequest;
+>>>>>>> origin
 import protocols.statemachine.notifications.ChannelReadyNotification;
 import pt.unl.fct.di.novasys.babel.core.GenericProtocol;
 import pt.unl.fct.di.novasys.babel.exceptions.HandlerRegistrationException;
