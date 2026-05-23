@@ -23,7 +23,7 @@ done
 
 i=0
 while [ $i -lt $processes ]; do
-  java -DlogFilename=logs/node$(($babelport + $i)) -cp target/DistAlg.jar Main babel.address=127.0.0.1 babel.port=$(($babelport + $i)) server_port=$(($base_server_port + $i)) initial_membership=$membership 2>&1 | sed "s/^/[$(($babelport + $i))] /" &
+  java -Xms512m -Xmx2g -DlogFilename=logs/node$(($babelport + $i)) -cp target/DistAlg.jar Main babel.address=127.0.0.1 babel.port=$(($babelport + $i)) server_port=$(($base_server_port + $i)) initial_membership=$membership 2>&1 | sed "s/^/[$(($babelport + $i))] /" &
   echo "launched process on SMR port $(($babelport + $i)), server port $(($base_server_port + $i))"
   sleep 1
   i=$(($i + 1))

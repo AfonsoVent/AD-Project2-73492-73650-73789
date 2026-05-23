@@ -89,6 +89,7 @@ public class StateMachine extends GenericProtocol {
 
     private static final long RECONNECT_JITTER_MAX_MS = 50; // Randomness
     private static final int MAX_BUFFER_PER_PEER = 1000; // Max size of buffer
+    private static final int MAX_TRACKED_OP_IDS = 200_000;
 
     private final short agreementProtoId; // Genreric Protocol reciever (Raft/Multi-Paxos)
 
@@ -278,7 +279,7 @@ public class StateMachine extends GenericProtocol {
         decidedBuffer.putIfAbsent(instance, notification);
 
         // Mark operation as decided to block future replayed forwards
-        decidedOpIds.add(notification.getOpId());
+        trackDecidedOpId(notification.getOpId());
 
         // Decided, clear Pending
         clearPending(notification.getOpId());
@@ -395,7 +396,7 @@ public class StateMachine extends GenericProtocol {
         if (decidedOpIds.contains(opId)) return;
 
         // Already on pending
-        if (!seenForwardedOps.add(opId)) return;
+        if (!trackSeenForwarded(opId)) return;
 
         // FwOp pending at leader
         trackPending(msg.getOpId(), msg.getOperation(), from);
@@ -524,8 +525,24 @@ public class StateMachine extends GenericProtocol {
         }
     }
 
-    // Check if the host is valid and belongs in static set of replicas
     private boolean isKnownMember(Host h) {
         return h != null && membership != null && membership.contains(h);
+    }
+
+    private void trackDecidedOpId(UUID opId) {
+        decidedOpIds.add(opId);
+        if (decidedOpIds.size() > MAX_TRACKED_OP_IDS) {
+            decidedOpIds.clear();
+            seenForwardedOps.clear();
+            logger.warn("Cleared decided/forward tracking caches (limit {}) for long-run memory protection",
+                    MAX_TRACKED_OP_IDS);
+        }
+    }
+
+    private boolean trackSeenForwarded(UUID opId) {
+        if (seenForwardedOps.size() > MAX_TRACKED_OP_IDS) {
+            seenForwardedOps.clear();
+        }
+        return seenForwardedOps.add(opId);
     }
 }

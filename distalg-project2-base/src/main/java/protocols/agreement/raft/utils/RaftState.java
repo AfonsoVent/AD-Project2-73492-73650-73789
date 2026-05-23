@@ -55,15 +55,23 @@ public class RaftState {
         return log;
     }
 
+    private int firstLogIndex() {
+        return log.isEmpty() ? 0 : log.get(0).getIndex();
+    }
+
     public LogEntry getEntryAt(int index) {
-        if (index < 0 || index >= log.size()) {
+        if (index < 0 || log.isEmpty()) {
             return null;
         }
-        return log.get(index);
+        int offset = index - firstLogIndex();
+        if (offset < 0 || offset >= log.size()) {
+            return null;
+        }
+        return log.get(offset);
     }
 
     public int getLastLogIndex() {
-        return log.isEmpty() ? -1 : log.size() - 1;
+        return log.isEmpty() ? -1 : log.get(log.size() - 1).getIndex();
     }
 
     public int getLastLogTerm() {
@@ -71,6 +79,17 @@ public class RaftState {
             return 0;
         }
         return log.get(log.size() - 1).getTerm();
+    }
+
+    /** Drop applied entries from memory; keep a tail for replication. */
+    public void compactAppliedLog(int lastAppliedIndex, int keepEntries) {
+        if (lastAppliedIndex < keepEntries || log.isEmpty()) {
+            return;
+        }
+        int removeThrough = lastAppliedIndex - keepEntries;
+        while (!log.isEmpty() && log.get(0).getIndex() <= removeThrough) {
+            log.remove(0);
+        }
     }
 
     public boolean isLogUpToDate(int candidateLastLogIndex, int candidateLastLogTerm) {
@@ -83,8 +102,15 @@ public class RaftState {
 
     public LogEntry appendEntry(int index, int term, UUID opId, byte[] operation) {
         LogEntry entry = new LogEntry(term, index, opId, operation);
-        if (index < log.size()) {
-            log.set(index, entry);
+        if (log.isEmpty()) {
+            log.add(entry);
+            return entry;
+        }
+        int offset = index - firstLogIndex();
+        if (offset >= 0 && offset < log.size()) {
+            log.set(offset, entry);
+        } else if (offset == log.size()) {
+            log.add(entry);
         } else {
             log.add(entry);
         }
@@ -95,18 +121,17 @@ public class RaftState {
         if (fromIndex < 0) {
             return;
         }
-        while (log.size() > fromIndex) {
+        while (!log.isEmpty() && log.get(log.size() - 1).getIndex() >= fromIndex) {
             log.remove(log.size() - 1);
         }
     }
 
     public List<LogEntry> getEntriesFrom(int fromIndex) {
         List<LogEntry> entries = new ArrayList<>();
-        if (fromIndex < 0) {
-            fromIndex = 0;
-        }
-        for (int i = fromIndex; i < log.size(); i++) {
-            entries.add(log.get(i));
+        for (LogEntry entry : log) {
+            if (entry.getIndex() >= fromIndex) {
+                entries.add(entry);
+            }
         }
         return entries;
     }

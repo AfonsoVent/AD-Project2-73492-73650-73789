@@ -34,9 +34,10 @@ public class RaftAgreement extends GenericProtocol {
     public static final short PROTOCOL_ID = 100;
     public static final String PROTOCOL_NAME = "RaftAgreement";
 
-    private static final int ELECTION_TIMEOUT_MIN_MS = 300;
-    private static final int ELECTION_TIMEOUT_RANGE_MS = 300;
+    private static final int ELECTION_TIMEOUT_MIN_MS = 600;
+    private static final int ELECTION_TIMEOUT_RANGE_MS = 400;
     private static final int HEARTBEAT_INTERVAL_MS = 50;
+    private static final int LOG_COMPACT_KEEP_ENTRIES = 2000;
 
     private Host myself;
     private List<Host> membership;
@@ -436,6 +437,7 @@ public class RaftAgreement extends GenericProtocol {
             state.setLastApplied(i);
             logger.debug("Applied instance {} opId {}", i, entry.getOpId());
         }
+        state.compactAppliedLog(state.getLastApplied(), LOG_COMPACT_KEEP_ENTRIES);
     }
 
     private List<Host> peers() {
