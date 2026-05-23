@@ -31,6 +31,7 @@ import protocols.agreement.requests.AddReplicaRequest;
 import protocols.agreement.requests.ProposeRequest;
 import protocols.agreement.requests.RemoveReplicaRequest;
 import protocols.agreement.timer.AcceptRetryTimer;
+import protocols.agreement.timer.PrepareRetryTimer;
 import protocols.agreement.utils.Ballot;
 import protocols.agreement.utils.PaxosSlot;
 import protocols.agreement.utils.QuorumUtils;
@@ -86,6 +87,9 @@ public class MultiPaxos extends GenericProtocol {
     private int joinedInstance;
     private List<Host> membership;
 
+    // primeiro lider
+    private Map<Integer, Integer> prepareRetryGeneration; 
+
     public MultiPaxos(Properties props) throws IOException, HandlerRegistrationException {
         super(PROTOCOL_NAME, PROTOCOL_ID);
         ballotOwner = UUID.randomUUID();
@@ -100,11 +104,13 @@ public class MultiPaxos extends GenericProtocol {
         slots = new HashMap<>();
         gatheredAcceptedSlots = new HashMap<>();
         acceptRetryGeneration = new HashMap<>();
+        prepareRetryGeneration = new HashMap<>();
 
         promisedBallot = null;
 
         /*--------------------- Register Timer Handlers ----------------------------- */
         registerTimerHandler(AcceptRetryTimer.TIMER_ID, this::uponAcceptRetryTimer);
+        registerTimerHandler(PrepareRetryTimer.TIMER_ID, this::uponPrepareRetryTimer);
 
         /*--------------------- Register Request Handlers ----------------------------- */
         registerRequestHandler(ProposeRequest.REQUEST_ID, this::uponProposeRequest);
@@ -246,6 +252,7 @@ public class MultiPaxos extends GenericProtocol {
         currentLeader = myself;
         promisedBallot = currentBallot;
 
+        prepareRetryGeneration.put(0, prepareRetryGeneration.getOrDefault(0,0) + 1);
         logger.info("Became leader with ballot {}", currentBallot);
 
         processPendingProposalsAsLeader();
@@ -278,7 +285,16 @@ public class MultiPaxos extends GenericProtocol {
 
         logger.info("Starting Phase 1 with ballot {}", currentBallot);
 
+        // incrementar geração e agendar retry
+        int gen = prepareRetryGeneration.getOrDefault(0, 0) + 1;
+        prepareRetryGeneration.put(0, gen);
+
+        // enviar prepare
         PrepareMessage prepare = new PrepareMessage(currentBallot);
+        membership.forEach(host -> sendMessage(prepare, host));
+
+        // agendar re-tentativa em e.g. 1000ms
+        setupTimer(new PrepareRetryTimer(gen), 1000);
         membership.forEach(host -> sendMessage(prepare, host));
     }
 
@@ -489,6 +505,20 @@ public class MultiPaxos extends GenericProtocol {
 
         // Reenvia e agenda o próximo retry pelo mesmo fluxo do Babel
         leaderSendAccept(timer.getInstance(), timer.getOpId(), timer.getValue());
+    }
+
+    // Primeiro lider
+    private void uponPrepareRetryTimer(PrepareRetryTimer timer, long timerId) {
+        int gen = prepareRetryGeneration.getOrDefault(0, 0);
+        if (timer.getGeneration() != gen) return; // timer obsoleto
+        if (amILeader) return; // já temos líder
+
+        // não somos líder ainda — incrementa ballot e reinicia Phase1
+        if (currentBallot == null) currentBallot = Ballot.initial(ballotOwner);
+        else currentBallot = currentBallot.next();
+
+        logger.info("Prepare retry generation {}, starting new Phase1 with {}", gen, currentBallot);
+        startPhase1();
     }
 
     // Auxiliar function
