@@ -9,8 +9,7 @@ public class RaftState {
     private int currentTerm;
     private Host votedFor;
     private final List<LogEntry> log;
-    private static final int SNAPSHOT_THRESHOLD = 10000;
-    private int snapshotIndex = -1;
+
     private int commitIndex;
     private int lastApplied;
 
@@ -144,27 +143,6 @@ public class RaftState {
             nextIndex.put(peer, next);
             matchIndex.put(peer, -1);
         }
-    }
-
-    public int getSnapshotIndex() {
-        return snapshotIndex;
-    }
-
-    public void setSnapshotIndex(int index) {
-        this.snapshotIndex = index;
-    }
-
-    public void maybeCompactLog() {
-        if (commitIndex - snapshotIndex < SNAPSHOT_THRESHOLD) return;
-
-        int compactTo = commitIndex;
-
-        // remove tudo até esse ponto
-        while (!log.isEmpty() && log.get(0).getIndex() <= compactTo) {
-            log.remove(0);
-        }
-
-        snapshotIndex = compactTo;
     }
 
     public ServerRole getRole() {
