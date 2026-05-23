@@ -1,4 +1,4 @@
-package protocols.agreement.messages;
+package protocols.agreement.multiPaxos.messages;
 
 import io.netty.buffer.ByteBuf;
 import protocols.agreement.utils.AgreementSerializationUtils;
