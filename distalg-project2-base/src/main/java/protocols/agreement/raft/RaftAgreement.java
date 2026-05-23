@@ -14,6 +14,7 @@ import protocols.agreement.raft.timers.HeartbeatTimer;
 import protocols.agreement.raft.utils.LogEntry;
 import protocols.agreement.raft.utils.RaftState;
 import protocols.agreement.requests.AddReplicaRequest;
+import java.util.concurrent.ThreadLocalRandom;
 import protocols.agreement.requests.ProposeRequest;
 import protocols.agreement.requests.RemoveReplicaRequest;
 import protocols.statemachine.notifications.ChannelReadyNotification;
