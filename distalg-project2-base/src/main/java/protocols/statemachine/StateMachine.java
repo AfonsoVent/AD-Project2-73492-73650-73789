@@ -94,9 +94,9 @@ public class StateMachine extends GenericProtocol {
     private final short agreementProtoId; // Genreric Protocol reciever (Raft/Multi-Paxos)
 
     // To Better performance - [Steal Leader]
-    private static final double DECAY_FACTOR = 0.5; // who much it's gonna to reduce each time
-    private static final long DECAY_INTERVAL_MS = 500; // Time to reduce the weigth
-    private static final double STEAL_THRESHOLD = 1000.0; // weigth need it to steal the leader
+    private static final double DECAY_FACTOR = 100; // who much it's gonna to reduce each time
+    private static final long DECAY_INTERVAL_MS = 1000; // Time to reduce the weigth
+    private static final double STEAL_THRESHOLD = 10000.0; // weigth need it to steal the leader
     private double effectiveForwardWeigth = 0.0;
     private long lastUpdateTimestamp = System.currentTimeMillis();
 
