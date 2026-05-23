@@ -97,9 +97,9 @@ public class StateMachine extends GenericProtocol {
     private final short agreementProtoId; // Genreric Protocol reciever (Raft/Multi-Paxos)
 
     // To Better performance - [Steal Leader]
-    private static final double DECAY_FACTOR = 100; // who much it's gonna to reduce each time
-    private static final long DECAY_INTERVAL_MS = 1000; // Time to reduce the weigth
-    private static final double STEAL_THRESHOLD = 10000.0; // weigth need it to steal the leader
+    private static final double DECAY_FACTOR = 10000; // who much it's gonna to reduce each time
+    private static final long DECAY_INTERVAL_MS = 100; // Time to reduce the weigth
+    private static final double STEAL_THRESHOLD = 100000.0; // weigth need it to steal the leader
     private double effectiveForwardWeigth = 0.0;
     private long lastUpdateTimestamp = System.currentTimeMillis();
 
@@ -129,8 +129,8 @@ public class StateMachine extends GenericProtocol {
         channelProps.setProperty(TCPChannel.ADDRESS_KEY, address);
         channelProps.setProperty(TCPChannel.PORT_KEY, port); //The port to bind to
         channelProps.setProperty(TCPChannel.HEARTBEAT_INTERVAL_KEY, "1000");
-        channelProps.setProperty(TCPChannel.HEARTBEAT_TOLERANCE_KEY, "3000");
-        channelProps.setProperty(TCPChannel.CONNECT_TIMEOUT_KEY, "1000");
+        channelProps.setProperty(TCPChannel.HEARTBEAT_TOLERANCE_KEY, "6000");
+        channelProps.setProperty(TCPChannel.CONNECT_TIMEOUT_KEY, "2000");
         channelId = createChannel(TCPChannel.NAME, channelProps);
 
         /*-------------------- Register Channel Events ------------------------------- */
@@ -289,43 +289,33 @@ public class StateMachine extends GenericProtocol {
 
         tryExecuteInOrder();
     }
-    
+
     private void uponLeaderChangeNotification(LeaderChangeNotification notification, short sourceProto) {
         Host newLeader = notification.getLeaderID();
-        
-        // Ignore invalid leaders updates
+
         if (newLeader != null && !isKnownMember(newLeader)) {
-            logger.warn("Ignoring LeaderChange to non-member host {} (membership={})", newLeader, membership);
+            logger.warn("Ignoring LeaderChange to non-member {}", newLeader);
             return;
         }
 
         Host oldLeader = this.currentLeader;
         this.currentLeader = newLeader;
         logger.info("Leader changed: {} -> {}", oldLeader, newLeader);
-        
+
         if (newLeader == null) return;
 
-        // Process the "lost" Ops while the leader was unknow
         drainWaitingLeaderQueue();
 
         if (pendingOps.isEmpty()) return;
+        if (newLeader.equals(oldLeader)) return; // same leader, don't re-propose
 
         if (self.equals(newLeader)) {
-            // Ask for pending Operations not made it
             for (PendingOp p : pendingOps.values()) {
-                // Send(ProposeRequest(Instance, OpId, Op), ProtocolID)
-                sendRequest(
-                    new ProposeRequest(nextInstance++, p.getOpId(), p.getOperation()),
-                    agreementProtoId);
+                sendRequest(new ProposeRequest(nextInstance++, p.getOpId(), p.getOperation()), agreementProtoId);
             }
         } else {
-            // Send to new leader
             for (PendingOp p : pendingOps.values()) {
-                // Send(FwMsg(OpId, Op), newLeader)
-                sendOrBufferToHost(
-                    new ForwardOpMessage(p.getOpId(), p.getOperation()),
-                    newLeader
-                );
+                sendOrBufferToHost(new ForwardOpMessage(p.getOpId(), p.getOperation()), newLeader);
             }
         }
     }
