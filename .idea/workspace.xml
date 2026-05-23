@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="9f0de638-e51c-4141-9109-4723b93e959d" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/distalg-project2-base/src/main/java/Main.java" beforeDir="false" afterPath="$PROJECT_DIR$/distalg-project2-base/src/main/java/Main.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/distalg-project2-base/src/main/java/protocols/agreement/raft/RaftAgreement.java" beforeDir="false" afterPath="$PROJECT_DIR$/distalg-project2-base/src/main/java/protocols/agreement/raft/RaftAgreement.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/distalg-project2-base/src/main/java/protocols/agreement/raft/utils/RaftState.java" beforeDir="false" afterPath="$PROJECT_DIR$/distalg-project2-base/src/main/java/protocols/agreement/raft/utils/RaftState.java" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="CopilotPersistence">
+    <persistenceIdMap>
+      <entry key="_C:/Users/HP/OneDrive - Instituto Politécnico de Setúbal/Ambiente de Trabalho/algdistp2/AD-Project2-73492-73650-73789" value="3Dr95UCaLhWIi4lRhBnEXEctxra" />
+    </persistenceIdMap>
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="GitHubPullRequestSearchHistory"><![CDATA[{
+  "lastFilter": {
+    "state": "OPEN",
+    "assignee": "cmsluz-ui"
+  }
+}]]></component>
+  <component name="GithubPullRequestsUISettings"><![CDATA[{
+  "selectedUrlAndAccountId": {
+    "url": "https://github.com/AfonsoVent/AD-Project2-73492-73650-73789.git",
+    "accountId": "52aae4d8-6ac7-45ed-9a79-9c9e09dbe6ce"
+  }
+}]]></component>
+  <component name="ProjectColorInfo"><![CDATA[{
+  "associatedIndex": 6
+}]]></component>
+  <component name="ProjectId" id="3Dr95UCaLhWIi4lRhBnEXEctxra" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "git-widget-placeholder": "raft",
+    "kotlin-language-version-configured": "true",
+    "node.js.detected.package.eslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "node.js.selected.package.tslint": "(autodetect)",
+    "nodejs_package_manager_path": "npm",
+    "vue.rearranger.settings.migration": "true"
+  }
+}]]></component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="9f0de638-e51c-4141-9109-4723b93e959d" name="Changes" comment="" />
+      <created>1779029137755</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1779029137755</updated>
+      <workItem from="1779029138905" duration="1348000" />
+    </task>
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+  <component name="github-copilot-workspace">
+    <instructionFileLocations>
+      <option value=".github/instructions" />
+    </instructionFileLocations>
+    <promptFileLocations>
+      <option value=".github/prompts" />
+    </promptFileLocations>
+  </component>
+</project>
