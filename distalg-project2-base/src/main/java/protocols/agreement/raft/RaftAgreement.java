@@ -34,8 +34,8 @@ public class RaftAgreement extends GenericProtocol {
     public static final short PROTOCOL_ID = 100;
     public static final String PROTOCOL_NAME = "RaftAgreement";
 
-    private static final int ELECTION_TIMEOUT_MIN_MS = 300;
-    private static final int ELECTION_TIMEOUT_RANGE_MS = 300;
+    private static final int ELECTION_TIMEOUT_MIN_MS = 800;
+    private static final int ELECTION_TIMEOUT_RANGE_MS = 400;
     private static final int HEARTBEAT_INTERVAL_MS = 50;
 
     private Host myself;
@@ -372,7 +372,12 @@ public class RaftAgreement extends GenericProtocol {
             prevTerm = prev.getTerm();
         }
 
-        List<LogEntry> entries = state.getEntriesFrom(nextIdx);
+        List<LogEntry> entries = new ArrayList<>();
+
+        for (int i = nextIdx; i <= state.getLastLogIndex(); i++) {
+            LogEntry e = state.getEntryAt(i);
+            if (e != null) entries.add(e);
+        }
         AppendEntriesMessage msg = new AppendEntriesMessage(
                 state.getCurrentTerm(),
                 myself,
@@ -394,15 +399,34 @@ public class RaftAgreement extends GenericProtocol {
 
     private void appendEntries(List<LogEntry> entries, int prevLogIndex) {
         int insertIndex = prevLogIndex + 1;
+
+        int conflictIndex = -1;
+
+        for (int i = 0; i < entries.size(); i++) {
+            int index = insertIndex + i;
+            LogEntry existing = state.getEntryAt(index);
+
+            if (existing != null && existing.getTerm() != entries.get(i).getTerm()) {
+                conflictIndex = index;
+                break;
+            }
+        }
+
+        if (conflictIndex != -1) {
+            state.truncateLogFrom(conflictIndex);
+        }
+
         for (int i = 0; i < entries.size(); i++) {
             int index = insertIndex + i;
             LogEntry incoming = entries.get(i);
-            LogEntry existing = state.getEntryAt(index);
-            if (existing != null && existing.getTerm() != incoming.getTerm()) {
-                state.truncateLogFrom(index);
-            }
+
             if (index >= state.getLog().size()) {
-                state.appendEntry(index, incoming.getTerm(), incoming.getOpId(), incoming.getOperation());
+                state.appendEntry(
+                        index,
+                        incoming.getTerm(),
+                        incoming.getOpId(),
+                        incoming.getOperation()
+                );
             }
         }
     }
@@ -434,6 +458,7 @@ public class RaftAgreement extends GenericProtocol {
             }
             triggerNotification(new DecidedNotification(i, entry.getOpId(), entry.getOperation()));
             state.setLastApplied(i);
+            state.maybeCompactLog();
             logger.debug("Applied instance {} opId {}", i, entry.getOpId());
         }
     }
