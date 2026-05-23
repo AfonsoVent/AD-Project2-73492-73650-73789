@@ -1,30 +1,41 @@
 package protocols.agreement.messages;
 
-import pt.unl.fct.di.novasys.babel.generic.ProtoMessage;
+import java.io.IOException;
+
 import io.netty.buffer.ByteBuf;
+import protocols.agreement.utils.Ballot;
+import pt.unl.fct.di.novasys.babel.generic.ProtoMessage;
 import pt.unl.fct.di.novasys.network.ISerializer;
 
 public class PrepareMessage extends ProtoMessage {
     public static final short MSG_ID = 103;
 
-    private final int term;
+    private final Ballot ballot;
 
-    public PrepareMessage(int term) {
+    public PrepareMessage(Ballot ballot) {
         super(MSG_ID);
-        this.term = term;
+        this.ballot = ballot;
     }
 
-    public int getTerm() { return term; }
-
-    public static ISerializer<PrepareMessage> serializer = new ISerializer<>() {
+    public Ballot getBallot() { return ballot; }
+    
+    public static ISerializer<PrepareMessage> serializer = new ISerializer<>(){
         @Override
         public void serialize(PrepareMessage msg, ByteBuf out) {
-            out.writeInt(msg.term);
+            try {
+                Ballot.serializer.serialize(msg.ballot, out);
+            } catch (IOException e) {
+                throw new RuntimeException("Error serializing PrepareMessage", e);
+            }
         }
 
         @Override
         public PrepareMessage deserialize(ByteBuf in) {
-            return new PrepareMessage(in.readInt());
+            try {
+                return new PrepareMessage(Ballot.serializer.deserialize(in));
+            } catch (IOException e) {
+                    throw new RuntimeException("Error serializing PrepareMessage", e);
+            }
         }
     };
 }
