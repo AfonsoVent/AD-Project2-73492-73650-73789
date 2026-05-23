@@ -84,21 +84,12 @@ public class StateMachine extends GenericProtocol {
     private static final long RECONNECT_MAX_MS = 5000; // Max time to reconnect
     private final Map<Host, Long> reconnectDelay = new HashMap<>(); // Used to get the time is getting to reconnect
 
-    private final LinkedHashMap<UUID, Boolean> decidedOpIds = new LinkedHashMap<>() {
-        protected boolean removeEldestEntry(Map.Entry<UUID, Boolean> eldest) {
-            return size() > MAX_TRACKED_OP_IDS;
-        }
-    };
-
-    private final LinkedHashMap<UUID, Boolean> seenForwardedOps = new LinkedHashMap<>() {
-        protected boolean removeEldestEntry(Map.Entry<UUID, Boolean> eldest) {
-            return size() > MAX_TRACKED_OP_IDS;
-        }
-    }; // Used to ignore forwarded messages of operations already decided
+    private final Set<UUID> seenForwardedOps = new HashSet<>(); // Used to ignore duplicate ForwardOpMessage replays beacuse reconnects
+    private final Set<UUID> decidedOpIds = new HashSet<>(); // Used to ignore forwarded messages of operations already decided
 
     private static final long RECONNECT_JITTER_MAX_MS = 50; // Randomness
     private static final int MAX_BUFFER_PER_PEER = 1000; // Max size of buffer
-    private static final int MAX_TRACKED_OP_IDS = 100_000;
+    private static final int MAX_TRACKED_OP_IDS = 50_000;
 
     private final short agreementProtoId; // Genreric Protocol reciever (Raft/Multi-Paxos)
 
@@ -354,9 +345,9 @@ public class StateMachine extends GenericProtocol {
         UUID opId = msg.getOpId();
 
         // Already decided
-        if (decidedOpIds.containsKey(opId)) return;
-        
-        //already pending
+        if (decidedOpIds.contains(opId)) return;
+
+        // Already on pending
         if (!trackSeenForwarded(opId)) return;
 
         // FwOp pending at leader
@@ -491,12 +482,19 @@ public class StateMachine extends GenericProtocol {
     }
 
     private void trackDecidedOpId(UUID opId) {
-        decidedOpIds.put(opId, Boolean.TRUE); // auto-evicts oldest when over limit
+        decidedOpIds.add(opId);
+        if (decidedOpIds.size() > MAX_TRACKED_OP_IDS) {
+            decidedOpIds.clear();
+            seenForwardedOps.clear();
+            logger.warn("Cleared decided/forward tracking caches (limit {}) for long-run memory protection",
+                    MAX_TRACKED_OP_IDS);
+        }
     }
 
     private boolean trackSeenForwarded(UUID opId) {
-        if (seenForwardedOps.containsKey(opId)) return false;
-        seenForwardedOps.put(opId, Boolean.TRUE);
-        return true;
+        if (seenForwardedOps.size() > MAX_TRACKED_OP_IDS) {
+            seenForwardedOps.clear();
+        }
+        return seenForwardedOps.add(opId);
     }
 }
