@@ -6,7 +6,7 @@ cd "$(dirname "$0")/distalg-project2-base/client" || exit 1
 
 THREADS=${1:-4}
 PAYLOAD=${2:-1024}
-SERVERS=${3:-"gengar-1:35000,oddish-1:35000,charmander-5:35000"}
+SERVERS=${3:-"bulbassaur-3:35000,oddish-1:35000,charmander-5:35000"}
 READ_PROP=${4:-0.5}
 WRITE_PROP=${5:-0.5}
 

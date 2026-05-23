@@ -7,7 +7,7 @@
 
 # Default values (can be overridden)
 PROJECT_PATH="${1:-.}"
-NODE1="${2:-gengar-1}"
+NODE1="${2:-bulbassaur-3}"
 NODE2="${3:-oddish-1}"
 NODE3="${4:-charmander-5}"
 
