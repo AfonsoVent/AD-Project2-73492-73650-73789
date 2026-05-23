@@ -71,9 +71,9 @@ public class MultiPaxos extends GenericProtocol {
         joinedInstance = -1; //-1 means we have not yet joined the system
         ballotOwner = UUID.randomUUID();
         pendingProposals = new LinkedList<>();
+        membership = new LinkedList<>();
 
         promisedBallot = null;
-        membership = null;
 
         /*--------------------- Register Timer Handlers ----------------------------- */
 
@@ -219,6 +219,8 @@ public class MultiPaxos extends GenericProtocol {
         joinedInstance = notification.getJoinInstance();
         membership = new LinkedList<>(notification.getMembership());
 
+        recalcMajority();
+
         if (slots == null) {
             slots = new HashMap<>();
         }
@@ -256,9 +258,24 @@ public class MultiPaxos extends GenericProtocol {
         logger.debug("I am leader, proposal {} can proceed to Accept phase", request.getOpId());
     }
 
+    private void uponAddReplica(AddReplicaRequest request, short sourceProto) {
+        membership.add(request.getReplica());
+        recalcMajority();
+    }
 
+    private void uponRemoveReplica(RemoveReplicaRequest request, short sourceProto) {
+        membership.remove(request.getReplica());
+        recalcMajority();
+    }
 
-
+    // Auxiliar function
+    private void recalcMajority() {
+        if (membership == null) {
+            majority = 0;
+        } else {
+            majority = QuorumUtils.majority(membership.size());
+        }
+    }
 
 
 
@@ -272,22 +289,8 @@ public class MultiPaxos extends GenericProtocol {
         }
     }
 
-    private void uponAddReplica(AddReplicaRequest request, short sourceProto) {
-        logger.debug("Received " + request);
-        //The AddReplicaRequest contains an "instance" field, which we ignore in this incorrect protocol.
-        //You should probably take it into account while doing whatever you do here.
-        membership.add(request.getReplica());
-    }
-    private void uponRemoveReplica(RemoveReplicaRequest request, short sourceProto) {
-        logger.debug("Received " + request);
-        //The RemoveReplicaRequest contains an "instance" field, which we ignore in this incorrect protocol.
-        //You should probably take it into account while doing whatever you do here.
-        membership.remove(request.getReplica());
-    }
-
     private void uponMsgFail(ProtoMessage msg, Host host, short destProto, Throwable throwable, int channelId) {
         //If a message fails to be sent, for whatever reason, log the message and the reason
         logger.error("Message {} to {} failed, reason: {}", msg, host, throwable);
     }
-
 }
