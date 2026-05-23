@@ -83,7 +83,12 @@ public class RaftState {
             log.set(p, entry);
         } else if (p == log.size()) {
             log.add(entry);
+        } else if (p < 0) {
+            return entry;
         } else {
+            while (log.size() < p) {
+                log.add(null);
+            }
             log.add(entry);
         }
         return entry;
