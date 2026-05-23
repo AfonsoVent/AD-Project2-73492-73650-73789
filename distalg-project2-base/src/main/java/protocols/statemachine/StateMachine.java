@@ -201,22 +201,65 @@ public class StateMachine extends GenericProtocol {
     /*--------------------------------- Requests ---------------------------------------- */
     private void uponOrderRequest(OrderRequest request, short sourceProto) {
         if (state == State.JOINING) {
+            //Do something smart (like buffering the requests)
             return;
-        }
-
+        } 
+        
         if (currentLeader == null) {
+            // Add to buffer
             waitingLeader.add(request);
-            logger.debug("Buffered opId {} (no leader, waitingSize={})", request.getOpId(), waitingLeader.size());
+
+            logger.debug("Buffered opId {} (reason= unknow leader, waitingLeaderSize={})",
+                request.getOpId(), waitingLeader.size());
             return;
         }
 
+        // Local op became pending
         trackPending(request.getOpId(), request.getOperation(), self);
 
         if (self.equals(currentLeader)) {
+            // If self is leader, doesn't need to steal the leader from himself
+            effectiveForwardWeigth = 0;
+
+            // Send(ProposeReq(Instance, OpId, Op), ProtocolID)
             sendRequest(new ProposeRequest(nextInstance++, request.getOpId(), request.getOperation()),
                     agreementProtoId);
         } else {
+            long now = System.currentTimeMillis();
+            long timePassed = now - lastUpdateTimestamp;
+
+            // Should I steal now the leader?
+
+            // Check if should reduce the time
+            if (timePassed >= DECAY_INTERVAL_MS) {
+                // Calculate how many decay periods pass - [RDProb]
+                int intervals = (int) (timePassed / DECAY_INTERVAL_MS);
+
+                // (exponential reducer) *= intervals ^ (DECAY_FACTOR) - [RDProb]
+                effectiveForwardWeigth *= Math.pow(DECAY_FACTOR, intervals);
+                
+                // Update time
+                lastUpdateTimestamp = now;
+            }
+
+            // Inc Weigth of ops sent to leader, to steal if need to
+            effectiveForwardWeigth += 1.0; // New weigth more important than old weigth
+
+            // Check if he should steal
+            if (effectiveForwardWeigth >= STEAL_THRESHOLD) {
+                logger.info("Order volume (Rate: {}) is very high. Trying *kindly* taking the leader.", 
+                            String.format("%.2f", effectiveForwardWeigth));
+                
+                // Req to Agreement to Steal Leader
+                sendRequest(new StealLeaderRequest(), agreementProtoId);
+                
+                // Whether or not he managed to steal the lead, he's going to restart
+                effectiveForwardWeigth = 0; 
+            }
+
+            // Send(FwMsg(OpId, Op), Leader)
             sendOrBufferToHost(new ForwardOpMessage(request.getOpId(), request.getOperation()), currentLeader);
+            
             logger.debug("Forwarding opId {} to leader {}", request.getOpId(), currentLeader);
         }
     }
@@ -251,7 +294,7 @@ public class StateMachine extends GenericProtocol {
         Host newLeader = notification.getLeaderID();
 
         if (newLeader != null && !isKnownMember(newLeader)) {
-            logger.warn("Ignoring LeaderChange to non-member host {} (membership={})", newLeader, membership);
+            logger.warn("Ignoring LeaderChange to non-member {}", newLeader);
             return;
         }
 
@@ -264,20 +307,15 @@ public class StateMachine extends GenericProtocol {
         drainWaitingLeaderQueue();
 
         if (pendingOps.isEmpty()) return;
-        if (newLeader.equals(oldLeader)) return;
+        if (newLeader.equals(oldLeader)) return; // same leader, don't re-propose
 
         if (self.equals(newLeader)) {
             for (PendingOp p : pendingOps.values()) {
-                sendRequest(
-                        new ProposeRequest(nextInstance++, p.getOpId(), p.getOperation()),
-                        agreementProtoId);
+                sendRequest(new ProposeRequest(nextInstance++, p.getOpId(), p.getOperation()), agreementProtoId);
             }
         } else {
             for (PendingOp p : pendingOps.values()) {
-                sendOrBufferToHost(
-                        new ForwardOpMessage(p.getOpId(), p.getOperation()),
-                        newLeader
-                );
+                sendOrBufferToHost(new ForwardOpMessage(p.getOpId(), p.getOperation()), newLeader);
             }
         }
     }
