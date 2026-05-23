@@ -37,8 +37,7 @@ public class RaftAgreement extends GenericProtocol {
     private static final int ELECTION_TIMEOUT_MIN_MS = 1500;
     private static final int ELECTION_TIMEOUT_RANGE_MS = 500;
     private static final int HEARTBEAT_INTERVAL_MS = 50;
-    private static final int LOG_COMPACT_KEEP_ENTRIES = 2000;
-
+    private static final int LOG_COMPACT_KEEP_ENTRIES = 200;
     private Host myself;
     private List<Host> membership;
     private int joinedInstance = -1;
@@ -427,19 +426,16 @@ public class RaftAgreement extends GenericProtocol {
     }
 
     private void applyCommitted() {
-        int applied = 0;
         while (state.getLastApplied() < state.getCommitIndex()) {
             int i = state.getLastApplied() + 1;
             LogEntry entry = state.getEntryAt(i);
             if (entry == null) break;
             triggerNotification(new DecidedNotification(i, entry.getOpId(), entry.getOperation()));
             state.setLastApplied(i);
-            applied++;
+            logger.debug("Applied instance {} opId {}", i, entry.getOpId());
         }
-        // Only compact every N applications, not on every single commit
-        if (applied > 0 && state.getLastApplied() % 500 == 0) {
-            state.compactAppliedLog(state.getLastApplied(), LOG_COMPACT_KEEP_ENTRIES);
-        }
+        // Always try to compact — the method itself only removes when there's enough to trim
+        state.compactAppliedLog(state.getLastApplied(), LOG_COMPACT_KEEP_ENTRIES);
     }
 
     private List<Host> peers() {
