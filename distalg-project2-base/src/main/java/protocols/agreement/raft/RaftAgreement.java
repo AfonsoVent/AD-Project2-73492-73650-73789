@@ -432,14 +432,10 @@ public class RaftAgreement extends GenericProtocol {
             if (entry == null) break;
             triggerNotification(new DecidedNotification(i, entry.getOpId(), entry.getOperation()));
             state.setLastApplied(i);
+            logger.debug("Applied instance {} opId {}", i, entry.getOpId());
         }
-        int sizeBefore = state.getLog().size();
+        // Always try to compact — the method itself only removes when there's enough to trim
         state.compactAppliedLog(state.getLastApplied(), LOG_COMPACT_KEEP_ENTRIES);
-        int sizeAfter = state.getLog().size();
-        if (sizeBefore != sizeAfter) {
-            logger.info("Log compacted: {} -> {} entries (lastApplied={})",
-                    sizeBefore, sizeAfter, state.getLastApplied());
-        }
     }
 
     private List<Host> peers() {
