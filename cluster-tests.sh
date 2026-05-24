@@ -51,21 +51,29 @@ for ((i=0; i<processes; i++)); do
   babel_port=$((34000 + i))
   server_port=$((35000 + i))
 
+  # Internal Raft membership
   if [ -z "$membership" ]; then
     membership="${ip}:${babel_port}"
-    client_hosts="${ip}:${server_port}"
   else
     membership="${membership},${ip}:${babel_port}"
+  fi
+
+  # Client-visible endpoints
+  if [ -z "$client_hosts" ]; then
+    client_hosts="${ip}:${server_port}"
+  else
     client_hosts="${client_hosts},${ip}:${server_port}"
   fi
 
 done
 
+echo "================================================="
 echo "RAFT MEMBERSHIP:"
 echo "$membership"
 echo
 echo "CLIENT HOSTS:"
 echo "$client_hosts"
+echo "================================================="
 echo
 
 read -p "Press ENTER to start servers..."
@@ -83,11 +91,13 @@ for ((i=0; i<processes; i++)); do
 
   ssh $node "
     mkdir -p ~/logs
+
     cd ~/AD-Project2-73492-73650-73789/distalg-project2-base
 
     nohup java \
-      -Xms512m -Xmx2g \
       -Djava.net.preferIPv4Stack=true \
+      -Xms2g \
+      -Xmx2g \
       -DlogFilename=logs/node_${babel_port} \
       -cp target/DistAlg.jar Main \
       babel.address=${ip} \
@@ -97,53 +107,78 @@ for ((i=0; i<processes; i++)); do
       > ~/logs/server_${node}.log 2>&1 &
   "
 
-  echo "Started server on $node ($ip)"
+  echo "Started server on ${node}"
+  echo "  babel.port=${babel_port}"
+  echo "  server_port=${server_port}"
+
   sleep 2
 
 done
 
-echo "Waiting for cluster..."
+# =========================================================
+# WAIT FOR CLUSTER STABILIZATION
+# =========================================================
+echo
+echo "Waiting for Raft cluster stabilization..."
 sleep 15
 
 # =========================================================
-# START CLIENTS
+# START SINGLE YCSB CLIENT
 # =========================================================
-for ((i=0; i<processes; i++)); do
+echo
+echo "Starting SINGLE YCSB client..."
 
-  node=${NODES[$i]}
+client_node=${NODES[0]}
 
-  ssh $node "
-    mkdir -p ~/logs
-    cd ~/AD-Project2-73492-73650-73789/distalg-project2-base/client
+ssh $client_node "
+  mkdir -p ~/logs
 
-    nohup java \
-      -Dlog4j.configurationFile=log4j2.xml \
-      -DlogFilename=client_${node}.log \
-      -cp asd-client.jar \
-      site.ycsb.Client \
-      -t -s \
-      -P config.properties \
-      -threads ${nthreads} \
-      -p fieldlength=${payload} \
-      -p hosts='${client_hosts}' \
-      -p readproportion=${readsper} \
-      -p updateproportion=${writesper} \
-      > ~/logs/client_${node}.log 2>&1 &
-  "
+  cd ~/AD-Project2-73492-73650-73789/distalg-project2-base/client
 
-  echo "Started client on $node"
-  sleep 1
+  nohup java \
+    -Djava.net.preferIPv4Stack=true \
+    -Dlog4j.configurationFile=log4j2.xml \
+    -DlogFilename=client_${client_node}.log \
+    -cp asd-client.jar \
+    site.ycsb.Client \
+    -t \
+    -s \
+    -P config.properties \
+    -threads ${nthreads} \
+    -p fieldlength=${payload} \
+    -p hosts='${client_hosts}' \
+    -p readproportion=${readsper} \
+    -p updateproportion=${writesper} \
+    > ~/logs/client_${client_node}.log 2>&1 &
+"
 
-done
+echo "Started SINGLE YCSB client on ${client_node}"
 
 echo
+echo "================================================="
 echo "SYSTEM RUNNING"
+echo "================================================="
+echo
+echo "Server logs:"
+echo "  ~/logs/server_<node>.log"
+echo
+echo "Client log:"
+echo "  ~/logs/client_${client_node}.log"
 echo
 
+# =========================================================
+# STOP SECTION
+# =========================================================
 read -p "Press ENTER to STOP everything..."
 
 for node in "${NODES[@]}"; do
-  ssh $node "pkill -f DistAlg.jar || true; pkill -f site.ycsb.Client || true"
+
+  ssh $node "
+    pkill -f DistAlg.jar || true
+    pkill -f site.ycsb.Client || true
+  "
+
 done
 
-echo "Stopped."
+echo
+echo "All processes stopped."
