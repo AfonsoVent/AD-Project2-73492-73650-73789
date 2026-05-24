@@ -26,7 +26,7 @@ import org.apache.logging.log4j.Logger;
 import protocols.agreement.messages.AcceptMessage;
 import protocols.agreement.messages.AcceptNackMessage;
 import protocols.agreement.messages.AcceptOKMessage;
-import protocols.agreement.messages.DecideMessage;
+import protocols.agreement.messages.BroadcastMessage;
 import protocols.agreement.messages.PrepareMessage;
 import protocols.agreement.messages.PrepareOKMessage;
 import protocols.agreement.notifications.DecidedNotification;
@@ -47,19 +47,13 @@ import pt.unl.fct.di.novasys.babel.generic.ProtoMessage;
 import pt.unl.fct.di.novasys.network.data.Host;
 
 /**
- * This is NOT a correct agreement protocol (it is actually a VERY wrong one)
- * This is simply an example of things you can do, and can be used as a starting point.
- *
- * You are free to change/delete ANYTHING in this class, including its fields.
- * Do not assume that any logic implemented here is correct, think for yourself!
+ * Multi-Paxos implementation with basic flow control, retry mechanisms and persistence.
  */
 public class MultiPaxos extends GenericProtocol {
     private static final Logger logger = LogManager.getLogger(MultiPaxos.class);
 
     private static final int MAX_RETAINED_DECIDED_SLOTS = 4096;
     private static final int MAX_OUTSTANDING_WINDOW = 64;
-    private static final long DECISION_REPLAY_INTERVAL_MS = 1000L;
-    private static final int MAX_REPLAY_DECISIONS = 1024;
 
     // Ballot
     private UUID ballotOwner;
@@ -87,13 +81,10 @@ public class MultiPaxos extends GenericProtocol {
 
     private volatile int outstandingProposals = 0;
     private final Queue<ProposeRequest> proposalThrottleQueue = new ConcurrentLinkedQueue<>();
-    private boolean proposalThrottleScheduled = false;
 
     // per-instance tracking for targeted retries
     private final Map<Integer, Set<Host>> acceptPendingTargets = new ConcurrentHashMap<>();
     private final Map<Integer, Long> acceptRetryDelay = new ConcurrentHashMap<>();
-    private final Map<Integer, DecideMessage> recentDecisions = new HashMap<>();
-    private boolean decisionReplayScheduled = false;
 
     // Persist reboot
     private Path stateFile;
@@ -197,7 +188,6 @@ public class MultiPaxos extends GenericProtocol {
         registerTimerHandler(PrepareRetryTimer.TIMER_ID, this::uponPrepareRetryTimer);
         // Proposal throttle timer
         registerTimerHandler(ProposalThrottleTimer.TIMER_ID, this::uponProposalThrottleTimer);
-        registerTimerHandler(DecisionReplayTimer.TIMER_ID, this::uponDecisionReplayTimer);
 
         /*--------------------- Register Request Handlers ----------------------------- */
         registerRequestHandler(ProposeRequest.REQUEST_ID, this::uponProposeRequest);
@@ -232,7 +222,6 @@ public class MultiPaxos extends GenericProtocol {
         registerMessageSerializer(cId, AcceptMessage.MSG_ID, AcceptMessage.serializer);
         registerMessageSerializer(cId, AcceptOKMessage.MSG_ID, AcceptOKMessage.serializer);
         registerMessageSerializer(cId, AcceptNackMessage.MSG_ID, AcceptNackMessage.serializer);
-        registerMessageSerializer(cId, DecideMessage.MSG_ID, DecideMessage.serializer);
 
         /*---------------------- Register Message Handlers -------------------------- */
         try {
@@ -244,7 +233,6 @@ public class MultiPaxos extends GenericProtocol {
             registerMessageHandler(cId, AcceptMessage.MSG_ID, this::uponAcceptMessage, this::uponMsgFail);
             registerMessageHandler(cId, AcceptOKMessage.MSG_ID, this::uponAcceptOKMessage, this::uponMsgFail);
             registerMessageHandler(cId, AcceptNackMessage.MSG_ID, this::uponAcceptNackMessage, this::uponMsgFail);
-            registerMessageHandler(cId, DecideMessage.MSG_ID, this::uponDecideMessage, this::uponMsgFail);
         } catch (HandlerRegistrationException e) {
             throw new AssertionError("Error registering message handler.", e);
         }
@@ -346,7 +334,6 @@ public class MultiPaxos extends GenericProtocol {
         logger.info("Became leader with ballot {}", currentBallot);
 
         prepareRetryDelayMs = 1000L;
-        scheduleDecisionReplay();
         processPendingProposalsAsLeader();
     }
 
@@ -356,7 +343,6 @@ public class MultiPaxos extends GenericProtocol {
         acceptPendingTargets.clear();
         acceptRetryDelay.clear();
         acceptRetryGeneration.clear();
-        proposalThrottleScheduled = false;
         updateKnownLeader(null);
 
         if (membership == null || membership.isEmpty()) {
@@ -381,7 +367,7 @@ public class MultiPaxos extends GenericProtocol {
             currentBallot = currentBallot.next();
         }
 
-        logger.debug("Starting Phase 1 with ballot {}", currentBallot);
+        logger.info("Starting Phase 1 with ballot {}", currentBallot);
 
         // incrementar geração e agendar retry com backoff para evitar eleições sincronizadas
         int gen = prepareRetryGeneration.getOrDefault(0, 0) + 1;
@@ -427,7 +413,7 @@ public class MultiPaxos extends GenericProtocol {
     }
 
     private void uponProposeRequest(ProposeRequest request, short sourceProto) {
-        logger.debug("PROPOSE in opId={} instance={} leader={} ballot={}",
+        logger.info("PROPOSE in opId={} instance={} leader={} ballot={}",
                 request.getOpId(), request.getInstance(), amILeader, currentBallot);
 
         if (joinedInstance < 0) {
@@ -445,7 +431,7 @@ public class MultiPaxos extends GenericProtocol {
         }
 
         int instance = nextInstance++;
-        logger.debug("PROPOSE -> ACCEPT opId={} instance={} ballot={}", request.getOpId(), instance, currentBallot);
+        logger.info("PROPOSE -> ACCEPT opId={} instance={} ballot={}", request.getOpId(), instance, currentBallot);
         leaderSendAccept(instance, request.getOpId(), request.getOperation());
 
         logger.debug("I am leader, proposal {} can proceed to Accept phase", request.getOpId());
@@ -489,9 +475,8 @@ public class MultiPaxos extends GenericProtocol {
         slot.setOpId(opId);
         slot.setAcceptedValue(value);
         persistState();
-
-        // Followers do not need a full scan here; keep the next proposal index monotonic.
-        nextInstance = Math.max(nextInstance, instance + 1);
+        
+        nextInstance = computeNextInstanceFromSlots();
 
         sendMessage(new AcceptOKMessage(ballot, instance), from);
 
@@ -531,13 +516,10 @@ public class MultiPaxos extends GenericProtocol {
         acceptRetryDelay.remove(instance);
         acceptAcks.remove(instance);
         persistState();
-        logger.debug("DECIDED instance={} opId={} ballot={}", instance, slot.getOpId(), ballot);
-        rememberDecision(instance, ballot, slot.getOpId(), slot.getAcceptedValue());
-        broadcastDecision(instance, ballot, slot.getOpId(), slot.getAcceptedValue());
+        logger.info("DECIDED instance={} opId={} ballot={}", instance, slot.getOpId(), ballot);
         triggerNotification(new DecidedNotification(instance, slot.getOpId(), slot.getAcceptedValue()));
         // decrease outstanding proposals and try to drain pending queue
         outstandingProposals = Math.max(0, outstandingProposals - 1);
-        compactDecidedState(instance);
         processPendingProposalsAsLeader();
     }
 
@@ -591,89 +573,6 @@ public class MultiPaxos extends GenericProtocol {
         persistState();
     }
 
-    private void broadcastDecision(int instance, Ballot ballot, UUID opId, byte[] value) {
-        DecideMessage decideMessage = new DecideMessage(ballot, instance, opId, value);
-        for (Host host : membership) {
-            if (host.equals(myself)) {
-                continue;
-            }
-            sendMessage(decideMessage, host);
-        }
-    }
-
-    private void rememberDecision(int instance, Ballot ballot, UUID opId, byte[] value) {
-        recentDecisions.put(instance, new DecideMessage(ballot, instance, opId, value));
-        if (recentDecisions.size() > MAX_REPLAY_DECISIONS) {
-            int minInstance = Integer.MAX_VALUE;
-            for (Integer key : recentDecisions.keySet()) {
-                if (key < minInstance) {
-                    minInstance = key;
-                }
-            }
-            if (minInstance != Integer.MAX_VALUE) {
-                recentDecisions.remove(minInstance);
-            }
-        }
-    }
-
-    private void uponDecideMessage(DecideMessage msg, Host from, short sourceProto, int channelId) {
-        int instance = msg.getInstance();
-
-        updateKnownLeader(from);
-        promisedBallot = msg.getBallot();
-        persistState();
-
-        if (slots == null) {
-            slots = new HashMap<>();
-        }
-
-        PaxosSlot slot = slots.computeIfAbsent(instance, k -> new PaxosSlot());
-        if (!slot.getIsDecided()) {
-            slot.setHighestAcceptSeen(msg.getBallot());
-            slot.setOpId(msg.getOpId());
-            slot.setAcceptedValue(msg.getOperation());
-            slot.setDecided(true);
-            acceptRetryGeneration.remove(instance);
-            acceptPendingTargets.remove(instance);
-            acceptRetryDelay.remove(instance);
-            acceptAcks.remove(instance);
-            persistState();
-            logger.debug("DECIDE received instance={} opId={} from={}", instance, msg.getOpId(), from);
-            triggerNotification(new DecidedNotification(instance, msg.getOpId(), msg.getOperation()));
-        }
-
-        nextInstance = Math.max(nextInstance, instance + 1);
-        compactDecidedState(instance);
-    }
-
-    private void scheduleDecisionReplay() {
-        if (decisionReplayScheduled || !amILeader || recentDecisions.isEmpty()) {
-            return;
-        }
-
-        decisionReplayScheduled = true;
-        setupTimer(new DecisionReplayTimer(), DECISION_REPLAY_INTERVAL_MS);
-    }
-
-    private void uponDecisionReplayTimer(DecisionReplayTimer timer, long timerId) {
-        decisionReplayScheduled = false;
-
-        if (!amILeader || recentDecisions.isEmpty()) {
-            return;
-        }
-
-        for (DecideMessage decideMessage : recentDecisions.values()) {
-            for (Host host : membership) {
-                if (host.equals(myself)) {
-                    continue;
-                }
-                sendMessage(decideMessage, host);
-            }
-        }
-
-        scheduleDecisionReplay();
-    }
-
     private void processPendingProposalsAsLeader() {
         // drain pending proposals but limit outstanding proposals to window
         while (outstandingProposals < maxOutstanding) {
@@ -684,8 +583,7 @@ public class MultiPaxos extends GenericProtocol {
         }
 
         // if still queued, schedule a throttle timer to continue draining
-        if (!pendingProposals.isEmpty() && !proposalThrottleScheduled) {
-            proposalThrottleScheduled = true;
+        if (!pendingProposals.isEmpty()) {
             setupTimer(new ProposalThrottleTimer(), proposalIntervalMs);
         }
     }
@@ -793,15 +691,8 @@ public class MultiPaxos extends GenericProtocol {
     }
 
     private void uponProposalThrottleTimer(ProposalThrottleTimer timer, long timerId) {
-        proposalThrottleScheduled = false;
         // drain pending proposals up to window
         processPendingProposalsAsLeader();
-    }
-
-    private class DecisionReplayTimer extends pt.unl.fct.di.novasys.babel.generic.ProtoTimer {
-        public static final short TIMER_ID = 405;
-        public DecisionReplayTimer() { super(TIMER_ID); }
-        @Override public pt.unl.fct.di.novasys.babel.generic.ProtoTimer clone() { return this; }
     }
 
     // Auxiliar function
@@ -819,32 +710,6 @@ public class MultiPaxos extends GenericProtocol {
         for (Integer k : slots.keySet()) if (k > max) max = k;
         int base = Math.max(max + 1, joinedInstance >= 0 ? joinedInstance : 0);
         return base;
-    }
-
-    private void compactDecidedState(int decidedInstance) {
-        if (slots == null || slots.isEmpty()) {
-            return;
-        }
-
-        int cutoff = decidedInstance - MAX_RETAINED_DECIDED_SLOTS;
-        if (cutoff <= 0) {
-            return;
-        }
-
-        slots.entrySet().removeIf(entry -> {
-            int instance = entry.getKey();
-            PaxosSlot slot = entry.getValue();
-            if (instance > cutoff || slot == null || !slot.getIsDecided()) {
-                return false;
-            }
-
-            acceptAcks.remove(instance);
-            acceptPendingTargets.remove(instance);
-            acceptRetryDelay.remove(instance);
-            acceptRetryGeneration.remove(instance);
-            recentDecisions.remove(instance);
-            return true;
-        });
     }
 
     private void uponMsgFail(ProtoMessage msg, Host host, short destProto, Throwable throwable, int channelId) {
