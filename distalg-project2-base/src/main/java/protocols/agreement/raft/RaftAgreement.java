@@ -34,10 +34,10 @@ public class RaftAgreement extends GenericProtocol {
     public static final short PROTOCOL_ID = 100;
     public static final String PROTOCOL_NAME = "RaftAgreement";
 
-    private static final int ELECTION_TIMEOUT_MIN_MS = 300;
-    private static final int ELECTION_TIMEOUT_RANGE_MS = 300;
+    private static final int ELECTION_TIMEOUT_MIN_MS = 1500;
+    private static final int ELECTION_TIMEOUT_RANGE_MS = 500;
     private static final int HEARTBEAT_INTERVAL_MS = 50;
-
+    private static final int LOG_COMPACT_KEEP_ENTRIES = 200;
     private Host myself;
     private List<Host> membership;
     private int joinedInstance = -1;
@@ -289,9 +289,7 @@ public class RaftAgreement extends GenericProtocol {
     }
 
     private void uponProposeRequest(ProposeRequest req, short src) {
-        if (state == null || !state.isLeader()) {
-            return;
-        }
+        if (state == null || !state.isLeader()) return;
 
         int index = req.getInstance();
         if (index <= state.getLastLogIndex()) {
@@ -300,7 +298,7 @@ public class RaftAgreement extends GenericProtocol {
         }
 
         state.appendEntry(index, state.getCurrentTerm(), req.getOpId(), req.getOperation());
-        logger.info("Leader appended instance {} opId {}", index, req.getOpId());
+        logger.debug("Leader appended instance {} opId {}", index, req.getOpId()); // debug not info
         replicateToFollowers();
     }
 
@@ -401,16 +399,17 @@ public class RaftAgreement extends GenericProtocol {
             if (existing != null && existing.getTerm() != incoming.getTerm()) {
                 state.truncateLogFrom(index);
             }
-            if (index >= state.getLog().size()) {
+            if (state.getEntryAt(index) == null) {
                 state.appendEntry(index, incoming.getTerm(), incoming.getOpId(), incoming.getOperation());
             }
         }
     }
 
     private void updateCommitIndex() {
+        List<Host> peersList = peers(); // compute once
         for (int n = state.getLastLogIndex(); n > state.getCommitIndex(); n--) {
             int replicas = 1;
-            for (Host peer : peers()) {
+            for (Host peer : peersList) {
                 if (state.getMatchIndex().getOrDefault(peer, -1) >= n) {
                     replicas++;
                 }
@@ -429,13 +428,13 @@ public class RaftAgreement extends GenericProtocol {
         while (state.getLastApplied() < state.getCommitIndex()) {
             int i = state.getLastApplied() + 1;
             LogEntry entry = state.getEntryAt(i);
-            if (entry == null) {
-                break;
-            }
+            if (entry == null) break;
             triggerNotification(new DecidedNotification(i, entry.getOpId(), entry.getOperation()));
             state.setLastApplied(i);
             logger.debug("Applied instance {} opId {}", i, entry.getOpId());
         }
+        // Always try to compact — the method itself only removes when there's enough to trim
+        state.compactAppliedLog(state.getLastApplied(), LOG_COMPACT_KEEP_ENTRIES);
     }
 
     private List<Host> peers() {
