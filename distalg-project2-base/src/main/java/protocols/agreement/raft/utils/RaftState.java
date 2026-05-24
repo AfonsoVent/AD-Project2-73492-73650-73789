@@ -8,7 +8,9 @@ public class RaftState {
 
     private int currentTerm;
     private Host votedFor;
+
     private final List<LogEntry> log;
+    private int logStartIndex;
 
     private int commitIndex;
     private int lastApplied;
@@ -28,6 +30,7 @@ public class RaftState {
         this.currentTerm = 0;
         this.votedFor = null;
         this.log = new ArrayList<>();
+        this.logStartIndex = 0;
         this.commitIndex = -1;
         this.lastApplied = -1;
         this.nextIndex = new HashMap<>();
@@ -35,105 +38,99 @@ public class RaftState {
         this.role = ServerRole.FOLLOWER;
     }
 
-    public int getCurrentTerm() {
-        return currentTerm;
+    private int toPhysical(int logicalIndex) {
+        return logicalIndex - logStartIndex;
     }
 
-    public void setCurrentTerm(int term) {
-        this.currentTerm = term;
-    }
+    public int getCurrentTerm() { return currentTerm; }
+    public void setCurrentTerm(int term) { this.currentTerm = term; }
 
-    public Host getVotedFor() {
-        return votedFor;
-    }
+    public Host getVotedFor() { return votedFor; }
+    public void setVotedFor(Host host) { this.votedFor = host; }
 
-    public void setVotedFor(Host host) {
-        this.votedFor = host;
-    }
+    public List<LogEntry> getLog() { return log; }
 
-    public List<LogEntry> getLog() {
-        return log;
-    }
-
-    public LogEntry getEntryAt(int index) {
-        if (index < 0 || index >= log.size()) {
-            return null;
-        }
-        return log.get(index);
+    public LogEntry getEntryAt(int logicalIndex) {
+        if (logicalIndex < 0 || log.isEmpty()) return null;
+        int p = toPhysical(logicalIndex);
+        if (p < 0 || p >= log.size()) return null;
+        return log.get(p);
     }
 
     public int getLastLogIndex() {
-        return log.isEmpty() ? -1 : log.size() - 1;
+        return log.isEmpty() ? -1 : log.get(log.size() - 1).getIndex();
     }
 
     public int getLastLogTerm() {
-        if (log.isEmpty()) {
-            return 0;
-        }
-        return log.get(log.size() - 1).getTerm();
+        return log.isEmpty() ? 0 : log.get(log.size() - 1).getTerm();
     }
 
     public boolean isLogUpToDate(int candidateLastLogIndex, int candidateLastLogTerm) {
         int myLastTerm = getLastLogTerm();
-        if (candidateLastLogTerm != myLastTerm) {
-            return candidateLastLogTerm > myLastTerm;
-        }
+        if (candidateLastLogTerm != myLastTerm) return candidateLastLogTerm > myLastTerm;
         return candidateLastLogIndex >= getLastLogIndex();
     }
 
     public LogEntry appendEntry(int index, int term, UUID opId, byte[] operation) {
         LogEntry entry = new LogEntry(term, index, opId, operation);
-        if (index < log.size()) {
-            log.set(index, entry);
+        if (log.isEmpty()) {
+            logStartIndex = index;
+            log.add(entry);
+            return entry;
+        }
+        int p = toPhysical(index);
+        if (p >= 0 && p < log.size()) {
+            log.set(p, entry);
+        } else if (p == log.size()) {
+            log.add(entry);
+        } else if (p < 0) {
+            return entry;
         } else {
+            while (log.size() < p) {
+                log.add(null);
+            }
             log.add(entry);
         }
         return entry;
     }
 
-    public void truncateLogFrom(int fromIndex) {
-        if (fromIndex < 0) {
-            return;
+    public void truncateLogFrom(int fromLogicalIndex) {
+        if (fromLogicalIndex < 0) return;
+        int p = toPhysical(fromLogicalIndex);
+        if (p < 0) return;
+        if (p < log.size()) {
+            log.subList(p, log.size()).clear();
         }
-        while (log.size() > fromIndex) {
-            log.remove(log.size() - 1);
-        }
     }
 
-    public List<LogEntry> getEntriesFrom(int fromIndex) {
-        List<LogEntry> entries = new ArrayList<>();
-        if (fromIndex < 0) {
-            fromIndex = 0;
-        }
-        for (int i = fromIndex; i < log.size(); i++) {
-            entries.add(log.get(i));
-        }
-        return entries;
+    public List<LogEntry> getEntriesFrom(int fromLogicalIndex) {
+        int p = toPhysical(fromLogicalIndex);
+        if (p < 0) p = 0;
+        if (p >= log.size()) return Collections.emptyList();
+        return new ArrayList<>(log.subList(p, log.size()));
     }
 
-    public int getCommitIndex() {
-        return commitIndex;
+    public void compactAppliedLog(int lastAppliedIndex, int keepEntries) {
+        if (log.isEmpty()) return;
+        int removeThrough = lastAppliedIndex - keepEntries;
+        if (removeThrough < logStartIndex) return;
+
+        int removeCount = toPhysical(removeThrough) + 1;
+        if (removeCount <= 0) return;
+        if (removeCount > log.size()) removeCount = log.size();
+
+        log.subList(0, removeCount).clear();
+        logStartIndex += removeCount;
     }
 
-    public void setCommitIndex(int index) {
-        this.commitIndex = index;
-    }
+    public int getCommitIndex() { return commitIndex; }
+    public void setCommitIndex(int index) { this.commitIndex = index; }
 
-    public int getLastApplied() {
-        return lastApplied;
-    }
+    public int getLastApplied() { return lastApplied; }
+    public void setLastApplied(int index) { this.lastApplied = index; }
 
-    public void setLastApplied(int index) {
-        this.lastApplied = index;
-    }
-
-    public Map<Host, Integer> getNextIndex() {
-        return nextIndex;
-    }
-
-    public Map<Host, Integer> getMatchIndex() {
-        return matchIndex;
-    }
+    public Map<Host, Integer> getNextIndex() { return nextIndex; }
+    public Map<Host, Integer> getMatchIndex() { return matchIndex; }
 
     public void initializeLeaderState(Collection<Host> peers) {
         nextIndex.clear();
@@ -145,25 +142,12 @@ public class RaftState {
         }
     }
 
-    public ServerRole getRole() {
-        return role;
-    }
+    public ServerRole getRole() { return role; }
+    public void setRole(ServerRole role) { this.role = role; }
 
-    public void setRole(ServerRole role) {
-        this.role = role;
-    }
-
-    public boolean isLeader() {
-        return role == ServerRole.LEADER;
-    }
-
-    public boolean isFollower() {
-        return role == ServerRole.FOLLOWER;
-    }
-
-    public boolean isCandidate() {
-        return role == ServerRole.CANDIDATE;
-    }
+    public boolean isLeader() { return role == ServerRole.LEADER; }
+    public boolean isFollower() { return role == ServerRole.FOLLOWER; }
+    public boolean isCandidate() { return role == ServerRole.CANDIDATE; }
 
     @Override
     public String toString() {
@@ -171,6 +155,7 @@ public class RaftState {
                 "currentTerm=" + currentTerm +
                 ", votedFor=" + votedFor +
                 ", logSize=" + log.size() +
+                ", logStartIndex=" + logStartIndex +
                 ", commitIndex=" + commitIndex +
                 ", lastApplied=" + lastApplied +
                 ", role=" + role +
