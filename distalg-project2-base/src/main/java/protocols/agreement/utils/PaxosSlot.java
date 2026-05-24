@@ -1,8 +1,11 @@
 package protocols.agreement.utils;
 
+import java.io.Serializable;
 import java.util.UUID;
 
-public class PaxosSlot {
+public class PaxosSlot implements Serializable {
+    private static final long serialVersionUID = 1L;
+
     private Ballot highestPrepareSeen; // Maior ballot/termo visto na Fase 1 para este slot
     private Ballot highestAcceptSeen;  // Maior ballot/termo aceite na Fase 2
     private UUID opId;

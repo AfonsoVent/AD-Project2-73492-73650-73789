@@ -47,18 +47,16 @@ public class Main {
         StateMachine sm = new StateMachine(props);
         // Agreement Protocol
         MultiPaxos agreement = new MultiPaxos(props);
-
+        //RaftAgreement agreement = new RaftAgreement(props);
         //Register applications in babel
         babel.registerProtocol(hashApp);
         babel.registerProtocol(sm);
-        babel.registerProtocol(agreement);
-
+        babel.registerProtocol(agreement); 
         //Init the protocols. This should be done after creating all protocols,
         // since there can be inter-protocol communications in this step.
         hashApp.init(props);
         sm.init(props);
         agreement.init(props);
-
         //Start babel and protocol threads
         babel.start();
 

@@ -14,7 +14,11 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Queue;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -26,6 +30,7 @@ import protocols.agreement.messages.BroadcastMessage;
 import protocols.agreement.messages.PrepareMessage;
 import protocols.agreement.messages.PrepareOKMessage;
 import protocols.agreement.notifications.DecidedNotification;
+import protocols.agreement.notifications.LeaderChangeNotification;
 import protocols.agreement.notifications.JoinedNotification;
 import protocols.agreement.requests.AddReplicaRequest;
 import protocols.agreement.requests.ProposeRequest;
@@ -69,8 +74,25 @@ public class MultiPaxos extends GenericProtocol {
     private Map<Integer, Set<Host>> acceptAcks;
     private Map<Integer, PrepareOKMessage.SlotStateData> gatheredAcceptedSlots;
 
+    // Flow control / retries
+    private final int maxOutstanding;
+    private final long proposalIntervalMs;
+    private final long acceptRetryInitialMs;
+    private final double acceptRetryBackoff;
+
+    private volatile int outstandingProposals = 0;
+    private final Queue<ProposeRequest> proposalThrottleQueue = new ConcurrentLinkedQueue<>();
+
+    // per-instance tracking for targeted retries
+    private final Map<Integer, Set<Host>> acceptPendingTargets = new ConcurrentHashMap<>();
+    private final Map<Integer, Long> acceptRetryDelay = new ConcurrentHashMap<>();
+
     // Persist reboot
     private Path stateFile;
+    // async persistence control
+    private final boolean disablePersistence;
+    private final AtomicBoolean persistPending = new AtomicBoolean(false);
+    private final Thread persistThread;
 
     // Timeouts
     private Map<Integer, Integer> acceptRetryGeneration;
@@ -89,6 +111,7 @@ public class MultiPaxos extends GenericProtocol {
 
     // primeiro lider
     private Map<Integer, Integer> prepareRetryGeneration; 
+    private long prepareRetryDelayMs;
 
     public MultiPaxos(Properties props) throws IOException, HandlerRegistrationException {
         super(PROTOCOL_NAME, PROTOCOL_ID);
@@ -105,12 +128,66 @@ public class MultiPaxos extends GenericProtocol {
         gatheredAcceptedSlots = new HashMap<>();
         acceptRetryGeneration = new HashMap<>();
         prepareRetryGeneration = new HashMap<>();
+        prepareRetryDelayMs = 1000L;
 
         promisedBallot = null;
+
+        /* Flow-control and retry parameters from properties */
+        this.maxOutstanding = Integer.parseInt(props.getProperty("paxos.max_outstanding", "8"));
+        this.proposalIntervalMs = Long.parseLong(props.getProperty("paxos.proposal_interval_ms", "5"));
+        this.acceptRetryInitialMs = Long.parseLong(props.getProperty("paxos.accept_retry_ms", "200"));
+        this.acceptRetryBackoff = Double.parseDouble(props.getProperty("paxos.accept_retry_backoff", "2.0"));
+
+        /* Persistence config: allow disabling for benchmarks or async writes */
+        this.disablePersistence = Boolean.parseBoolean(props.getProperty("paxos.disable_persistence", "false"));
+        if (this.disablePersistence) {
+            this.persistThread = null;
+        } else {
+            this.persistThread = new Thread(() -> {
+                while (!Thread.currentThread().isInterrupted()) {
+                    try {
+                        if (persistPending.getAndSet(false)) {
+                            // coalesce writes and perform a synchronous write of current state
+                            synchronized (MultiPaxos.this) {
+                                try (ObjectOutputStream oos = new ObjectOutputStream(Files.newOutputStream(stateFile))) {
+                                    oos.writeObject(promisedBallot);
+                                    oos.writeObject(slots);
+                                } catch (IOException e) {
+                                    logger.warn("Failed to persist paxos state (async): {}", e.getMessage());
+                                }
+                            }
+                        }
+                        Thread.sleep(100);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }, "MultiPaxos-PersistThread");
+            this.persistThread.setDaemon(true);
+            this.persistThread.start();
+            // ensure final flush on JVM shutdown
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                persistPending.set(true);
+                if (persistThread != null) {
+                    persistThread.interrupt();
+                    try { persistThread.join(200); } catch (InterruptedException ignored) {}
+                }
+                synchronized (MultiPaxos.this) {
+                    try (ObjectOutputStream oos = new ObjectOutputStream(Files.newOutputStream(stateFile))) {
+                        oos.writeObject(promisedBallot);
+                        oos.writeObject(slots);
+                    } catch (IOException e) {
+                        logger.warn("Failed to persist paxos state on shutdown: {}", e.getMessage());
+                    }
+                }
+            }));
+        }
 
         /*--------------------- Register Timer Handlers ----------------------------- */
         registerTimerHandler(AcceptRetryTimer.TIMER_ID, this::uponAcceptRetryTimer);
         registerTimerHandler(PrepareRetryTimer.TIMER_ID, this::uponPrepareRetryTimer);
+        // Proposal throttle timer
+        registerTimerHandler(ProposalThrottleTimer.TIMER_ID, this::uponProposalThrottleTimer);
 
         /*--------------------- Register Request Handlers ----------------------------- */
         registerRequestHandler(ProposeRequest.REQUEST_ID, this::uponProposeRequest);
@@ -251,15 +328,18 @@ public class MultiPaxos extends GenericProtocol {
         amILeader = true;
         currentLeader = myself;
         promisedBallot = currentBallot;
+        triggerNotification(new LeaderChangeNotification(myself));
 
         prepareRetryGeneration.put(0, prepareRetryGeneration.getOrDefault(0,0) + 1);
         logger.info("Became leader with ballot {}", currentBallot);
 
+        prepareRetryDelayMs = 1000L;
         processPendingProposalsAsLeader();
     }
 
     private void startPhase1() {
         acceptRetryGeneration.clear();
+        updateKnownLeader(null);
 
         if (membership == null || membership.isEmpty()) {
             logger.debug("Cannot start Phase 1 without membership");
@@ -285,17 +365,17 @@ public class MultiPaxos extends GenericProtocol {
 
         logger.info("Starting Phase 1 with ballot {}", currentBallot);
 
-        // incrementar geração e agendar retry
+        // incrementar geração e agendar retry com backoff para evitar eleições sincronizadas
         int gen = prepareRetryGeneration.getOrDefault(0, 0) + 1;
         prepareRetryGeneration.put(0, gen);
 
-        // enviar prepare
+        // enviar prepare uma única vez
         PrepareMessage prepare = new PrepareMessage(currentBallot);
         membership.forEach(host -> sendMessage(prepare, host));
 
-        // agendar re-tentativa em e.g. 1000ms
-        setupTimer(new PrepareRetryTimer(gen), 1000);
-        membership.forEach(host -> sendMessage(prepare, host));
+        long retryDelayMs = Math.min(prepareRetryDelayMs + ThreadLocalRandom.current().nextLong(250), 5000L);
+        prepareRetryDelayMs = Math.min(Math.max(prepareRetryDelayMs * 2, 1000L), 5000L);
+        setupTimer(new PrepareRetryTimer(gen), retryDelayMs);
     }
 
     private void uponJoinedNotification(JoinedNotification notification, short sourceProto) {
@@ -314,15 +394,23 @@ public class MultiPaxos extends GenericProtocol {
 
         majority = QuorumUtils.majority(membership.size());
         nextInstance = computeNextInstanceFromSlots();
+        prepareRetryDelayMs = 1000L + (long) Math.max(0, membership.indexOf(myself)) * 1000L;
 
         logger.info("Agreement starting at instance {}, membership: {}, majority: {}",
                 joinedInstance, membership, majority);
 
-        startPhase1();
+        if (membership.indexOf(myself) <= 0) {
+            startPhase1();
+        } else {
+            int gen = prepareRetryGeneration.getOrDefault(0, 0) + 1;
+            prepareRetryGeneration.put(0, gen);
+            setupTimer(new PrepareRetryTimer(gen), prepareRetryDelayMs);
+        }
     }
 
     private void uponProposeRequest(ProposeRequest request, short sourceProto) {
-        logger.debug("Received {}", request);
+        logger.info("PROPOSE in opId={} instance={} leader={} ballot={}",
+                request.getOpId(), request.getInstance(), amILeader, currentBallot);
 
         if (joinedInstance < 0) {
             logger.debug("Still joining, buffering proposal {}", request.getOpId());
@@ -339,6 +427,7 @@ public class MultiPaxos extends GenericProtocol {
         }
 
         int instance = nextInstance++;
+        logger.info("PROPOSE -> ACCEPT opId={} instance={} ballot={}", request.getOpId(), instance, currentBallot);
         leaderSendAccept(instance, request.getOpId(), request.getOperation());
 
         logger.debug("I am leader, proposal {} can proceed to Accept phase", request.getOpId());
@@ -361,7 +450,7 @@ public class MultiPaxos extends GenericProtocol {
         UUID opId = msg.getOpId();
         byte[] value = msg.getValue();
 
-        logger.debug("Received Accept(ballot={}, instance={}) from {}", ballot, instance, from);
+        logger.debug("ACCEPT in ballot={} instance={} from={} opId={}", ballot, instance, from, opId);
 
         if (promisedBallot != null && ballot.compareTo(promisedBallot) < 0) {
             logger.debug("Rejecting Accept(ballot={}, instance={}) from {} because promisedBallot={}",
@@ -371,6 +460,7 @@ public class MultiPaxos extends GenericProtocol {
             return;
         }
 
+        updateKnownLeader(from);
         promisedBallot = ballot;
         persistState();
 
@@ -386,7 +476,7 @@ public class MultiPaxos extends GenericProtocol {
 
         sendMessage(new AcceptOKMessage(ballot, instance), from);
 
-        logger.debug("Accepted Accept(ballot={}, instance={}) from {}", ballot, instance, from);
+        logger.debug("ACCEPT-OK sent ballot={} instance={} to={}", ballot, instance, from);
     }
     
     private void uponAcceptOKMessage(AcceptOKMessage msg, Host from, short sourceProto, int channelId) {
@@ -399,6 +489,13 @@ public class MultiPaxos extends GenericProtocol {
         Set<Host> acks = acceptAcks.computeIfAbsent(instance, k -> new HashSet<>());
         if (!acks.add(from)) return;
 
+        // remove from pending targets for targeted retries
+        Set<Host> remaining = acceptPendingTargets.get(instance);
+        if (remaining != null) remaining.remove(from);
+
+        logger.debug("ACCEPT-ACK ballot={} instance={} from={} acks={}/{}",
+            ballot, instance, from, acks.size(), membership.size());
+
         if (!QuorumUtils.hasMajority(acks.size(), membership.size())) return;
 
         // Mark decided
@@ -410,11 +507,15 @@ public class MultiPaxos extends GenericProtocol {
 
         slot.setDecided(true);
         acceptRetryGeneration.remove(instance);
-        persistState();
-        triggerNotification(new DecidedNotification(instance, slot.getOpId(), slot.getAcceptedValue()));
-
+        // clear retry tracking for this instance
+        acceptPendingTargets.remove(instance);
+        acceptRetryDelay.remove(instance);
         acceptAcks.remove(instance);
-
+        persistState();
+        logger.info("DECIDED instance={} opId={} ballot={}", instance, slot.getOpId(), ballot);
+        triggerNotification(new DecidedNotification(instance, slot.getOpId(), slot.getAcceptedValue()));
+        // decrease outstanding proposals and try to drain pending queue
+        outstandingProposals = Math.max(0, outstandingProposals - 1);
         processPendingProposalsAsLeader();
     }
 
@@ -446,32 +547,50 @@ public class MultiPaxos extends GenericProtocol {
         slot.setAcceptedValue(value);
 
         // enviar a todos
+        logger.debug("SEND ACCEPT instance={} ballot={} targets={}", instance, currentBallot, membership.size());
         for (Host h : membership) {
             sendMessage(msg, h);
         }
         // também conta o próprio ack
         acceptAcks.computeIfAbsent(instance, k -> new HashSet<>()).add(myself);
-        
-        scheduleAcceptRetry(instance, opId, value, 500);
+
+        // track pending targets for targeted retries
+        acceptPendingTargets.put(instance, new HashSet<>(membership));
+        acceptRetryDelay.put(instance, acceptRetryInitialMs);
+
+        // increment outstanding proposals (flow control)
+        outstandingProposals++;
+
+        // leader counts itself as acked, so don't retry to self
+        Set<Host> pending = acceptPendingTargets.get(instance);
+        if (pending != null) pending.remove(myself);
+
+        scheduleAcceptRetry(instance, opId, value, (int) acceptRetryInitialMs);
         persistState();
     }
 
     private void processPendingProposalsAsLeader() {
-        ProposeRequest req;
-        while ((req = pendingProposals.poll()) != null) {
+        // drain pending proposals but limit outstanding proposals to window
+        while (outstandingProposals < maxOutstanding) {
+            ProposeRequest req = pendingProposals.poll();
+            if (req == null) break;
             int instance = nextInstance++;
             leaderSendAccept(instance, req.getOpId(), req.getOperation());
+        }
+
+        // if still queued, schedule a throttle timer to continue draining
+        if (!pendingProposals.isEmpty()) {
+            setupTimer(new ProposalThrottleTimer(), proposalIntervalMs);
         }
     }
 
     // Tolerate reboot
     private synchronized void persistState() {
-        try (ObjectOutputStream oos = new ObjectOutputStream(Files.newOutputStream(stateFile))) {
-            oos.writeObject(promisedBallot);
-            oos.writeObject(slots); // garantir que PaxosSlot é serializável (ou serializar os campos)
-        } catch (IOException e) {
-            logger.warn("Failed to persist paxos state: {}", e.getMessage());
-        }
+        // If persistence disabled (benchmark mode), skip writes
+        if (disablePersistence) return;
+
+        // Coalesce frequent calls: mark pending and let background thread perform the write
+        persistPending.set(true);
     }
 
     private synchronized void loadState() {
@@ -504,7 +623,38 @@ public class MultiPaxos extends GenericProtocol {
         if (slot != null && slot.getIsDecided()) return;
 
         // Reenvia e agenda o próximo retry pelo mesmo fluxo do Babel
-        leaderSendAccept(timer.getInstance(), timer.getOpId(), timer.getValue());
+        logger.debug("ACCEPT retry instance={} ballot={} gen={}", timer.getInstance(), timer.getBallot(), timer.getGeneration());
+
+        // send only to hosts that have not acked yet
+        Set<Host> remaining = acceptPendingTargets.get(timer.getInstance());
+        if (remaining == null || remaining.isEmpty()) return;
+
+        AcceptMessage retryMsg = new AcceptMessage(timer.getBallot(), timer.getInstance(), timer.getOpId(), timer.getValue());
+        for (Host h : new HashSet<>(remaining)) {
+            sendMessage(retryMsg, h);
+        }
+
+        // exponential backoff for next retry
+        long nextDelay = (long) (timer.getDelayMs() * acceptRetryBackoff);
+        acceptRetryDelay.put(timer.getInstance(), nextDelay);
+        scheduleAcceptRetry(timer.getInstance(), timer.getOpId(), timer.getValue(), (int) nextDelay);
+    }
+
+    private void updateKnownLeader(Host leader) {
+        if (leader == null) {
+            if (currentLeader != null) {
+                currentLeader = null;
+                triggerNotification(new LeaderChangeNotification(null));
+            }
+            return;
+        }
+
+        if (leader.equals(currentLeader)) {
+            return;
+        }
+
+        currentLeader = leader;
+        triggerNotification(new LeaderChangeNotification(leader));
     }
 
     // Primeiro lider
@@ -513,12 +663,32 @@ public class MultiPaxos extends GenericProtocol {
         if (timer.getGeneration() != gen) return; // timer obsoleto
         if (amILeader) return; // já temos líder
 
+        // If we already know a leader, let it continue instead of constantly restarting elections.
+        // This avoids the livelock where followers keep preempting a stable leader.
+        if (currentLeader != null) {
+            logger.debug("Skipping Phase 1 retry because leader {} is known", currentLeader);
+            return;
+        }
+
         // não somos líder ainda — incrementa ballot e reinicia Phase1
         if (currentBallot == null) currentBallot = Ballot.initial(ballotOwner);
         else currentBallot = currentBallot.next();
 
         logger.info("Prepare retry generation {}, starting new Phase1 with {}", gen, currentBallot);
+        prepareRetryDelayMs = Math.min(Math.max(prepareRetryDelayMs * 2, 1000L), 5000L);
         startPhase1();
+    }
+
+    // Proposal throttle timer (single-shot) to space out draining pending proposals
+    private class ProposalThrottleTimer extends pt.unl.fct.di.novasys.babel.generic.ProtoTimer {
+        public static final short TIMER_ID = 404;
+        public ProposalThrottleTimer() { super(TIMER_ID); }
+        @Override public pt.unl.fct.di.novasys.babel.generic.ProtoTimer clone() { return this; }
+    }
+
+    private void uponProposalThrottleTimer(ProposalThrottleTimer timer, long timerId) {
+        // drain pending proposals up to window
+        processPendingProposalsAsLeader();
     }
 
     // Auxiliar function
