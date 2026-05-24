@@ -13,7 +13,7 @@ import java.util.UUID;
  *************************************************/
 public class BroadcastMessage extends ProtoMessage {
 
-    public final static short MSG_ID = 101;
+    public final static short MSG_ID = 102;
 
     private final UUID opId;
     private final int instance;

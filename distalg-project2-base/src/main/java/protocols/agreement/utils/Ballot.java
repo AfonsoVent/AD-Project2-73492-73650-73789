@@ -1,53 +1,77 @@
 package protocols.agreement.utils;
 
-import java.util.Objects;
+import java.io.Serializable;
+import java.util.UUID;
 
-import pt.unl.fct.di.novasys.network.data.Host;
+import io.netty.buffer.ByteBuf;
+import pt.unl.fct.di.novasys.network.ISerializer;
 
-public final class Ballot implements Comparable<Ballot> {
+/**
+ * Ballot identifier used for Paxos ballots.
+ * A ballot is a pair (counter, proposerId) and supports comparison.
+ */
+public final class Ballot implements Comparable<Ballot>, Serializable {
+    private static final long serialVersionUID = 1L;
 
-    private final long round;
-    private final Host proposer;
+    private final long counter;
+    private final UUID proposer;
 
-    public Ballot(long round, Host proposer) {
-        this.round = round;
+    public Ballot(long counter, UUID proposer) {
+        this.counter = counter;
         this.proposer = proposer;
     }
 
-    public long getRound() {
-        return round;
-    }
+    public long getCounter() { return counter; }
+    public UUID getProposer() { return proposer; }
+    public Ballot next() { return new Ballot(counter + 1, proposer); }
 
-    public Host getProposer() {
-        return proposer;
+    public static Ballot of(long counter, UUID proposer) { return new Ballot(counter, proposer); }
+    public static Ballot initial(UUID proposer) { return new Ballot(0L, proposer); }
+
+    @Override
+    public int compareTo(Ballot o) {
+        int cmp = Long.compare(this.counter, o.counter);
+        if (cmp != 0) return cmp;
+
+        int msbCmp = Long.compare(this.proposer.getMostSignificantBits(), o.proposer.getMostSignificantBits());
+        if (msbCmp != 0) return msbCmp;
+        return Long.compare(this.proposer.getLeastSignificantBits(), o.proposer.getLeastSignificantBits());
     }
 
     @Override
-    public int compareTo(Ballot other) {
-        if (other == null) return 1;
-        int comparison = Long.compare(round, other.round);
-        if (comparison != 0) return comparison;
-        return AgreementSerializationUtils.compareHosts(proposer, other.proposer);
-    }
-
-    @Override
-    public boolean equals(Object object) {
-        if (this == object) return true;
-        if (!(object instanceof Ballot)) return false;
-        Ballot ballot = (Ballot) object;
-        return round == ballot.round && Objects.equals(proposer, ballot.proposer);
+    public boolean equals(Object obj) {
+        if (this == obj) return true;
+        if (!(obj instanceof Ballot)) return false;
+        Ballot o = (Ballot) obj;
+        return this.counter == o.counter && this.proposer.equals(o.proposer);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(round, proposer);
+        int h = Long.hashCode(counter);
+        h = 31 * h + proposer.hashCode();
+        return h;
     }
 
     @Override
     public String toString() {
-        return "Ballot{" +
-                "round=" + round +
-                ", proposer=" + proposer +
-                '}';
+        return "Ballot{" + "counter=" + counter + ", proposer=" + proposer + '}';
     }
+
+    public static final ISerializer<Ballot> serializer = new ISerializer<>() {
+        @Override
+        public void serialize(Ballot ballot, ByteBuf out) {
+            out.writeLong(ballot.counter);
+            out.writeLong(ballot.proposer.getMostSignificantBits());
+            out.writeLong(ballot.proposer.getLeastSignificantBits());
+        }
+
+        @Override
+        public Ballot deserialize(ByteBuf in) {
+            long counter = in.readLong();
+            long msb = in.readLong();
+            long lsb = in.readLong();
+            return new Ballot(counter, new UUID(msb, lsb));
+        }
+    };
 }

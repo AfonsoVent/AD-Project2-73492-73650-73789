@@ -52,14 +52,14 @@ public final class AgreementSerializationUtils {
     }
 
     public static void writeBallot(Ballot ballot, ByteBuf out) {
-        out.writeLong(ballot.getRound());
-        writeHost(ballot.getProposer(), out);
+        out.writeLong(ballot.getCounter());
+        writeUUID(ballot.getProposer(), out);
     }
 
     public static Ballot readBallot(ByteBuf in) {
-        long round = in.readLong();
-        Host proposer = readHost(in);
-        return new Ballot(round, proposer);
+        long counter = in.readLong();
+        UUID proposer = readUUID(in);
+        return new Ballot(counter, proposer);
     }
 
     public static int compareHosts(Host left, Host right) {

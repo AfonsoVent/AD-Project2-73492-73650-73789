@@ -3,7 +3,7 @@ import java.util.Properties;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import protocols.agreement.MultiPaxosAgreement;
+import protocols.agreement.MultiPaxos;
 import protocols.app.HashApp;
 import protocols.statemachine.StateMachine;
 import pt.unl.fct.di.novasys.babel.core.Babel;
@@ -46,8 +46,8 @@ public class Main {
         // StateMachine Protocol
         StateMachine sm = new StateMachine(props);
         // Agreement Protocol
-        //IncorrectAgreement agreement = new IncorrectAgreement(props);
-        MultiPaxosAgreement agreement = new MultiPaxosAgreement(props);
+        MultiPaxos agreement = new MultiPaxos(props);
+        //RaftAgreement agreement = new RaftAgreement(props);
         //Register applications in babel
         babel.registerProtocol(hashApp);
         babel.registerProtocol(sm);
