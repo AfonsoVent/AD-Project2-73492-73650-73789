@@ -1,4 +1,4 @@
-2026-05-24 09:31:48:862 0 sec: 0 operations; est completion in 0 second 
+2026-05-24 18:19:09:237 0 sec: 0 operations; est completion in 0 second 
 WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
 WARNING: sun.misc.Unsafe::objectFieldOffset has been called by io.netty.util.internal.PlatformDependent0$3 (file:/Users/josealves/Documents/Projects/AD/AD-Project2-73492-73650-73789/distalg-project2-base/client/asd-client.jar)
 WARNING: Please consider reporting this to the maintainers of class io.netty.util.internal.PlatformDependent0$3
@@ -8,20 +8,22 @@ WARNING: java.lang.System::loadLibrary has been called by io.netty.util.internal
 WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
 WARNING: Restricted methods will be blocked in a future release unless native access is enabled
 
-2026-05-24 09:31:53:843 5 sec: 13041 operations; 2606,64 current ops/sec; est completion in 19 minutes [READ AverageLatency(us)=341,74] [UPDATE AverageLatency(us)=365,71] 
-2026-05-24 09:31:58:845 10 sec: 27230 operations; 2836,67 current ops/sec; est completion in 18 minutes [READ AverageLatency(us)=345,32] [UPDATE AverageLatency(us)=356,67] 
-2026-05-24 09:32:03:845 15 sec: 38497 operations; 2253,4 current ops/sec; est completion in 19 minutes [READ AverageLatency(us)=435,78] [UPDATE AverageLatency(us)=447,88] 
-2026-05-24 09:32:08:842 20 sec: 47535 operations; 1808,69 current ops/sec; est completion in 20 minutes [READ AverageLatency(us)=545,32] [UPDATE AverageLatency(us)=556,29] 
-2026-05-24 09:32:13:845 25 sec: 55236 operations; 1539,28 current ops/sec; est completion in 22 minutes [READ AverageLatency(us)=641,86] [UPDATE AverageLatency(us)=653,16] 
-2026-05-24 09:32:18:843 30 sec: 61853 operations; 1324,19 current ops/sec; est completion in 23 minutes [READ AverageLatency(us)=748] [UPDATE AverageLatency(us)=757,36] 
-2026-05-24 09:32:23:844 35 sec: 67650 operations; 1158,94 current ops/sec; est completion in 25 minutes [READ AverageLatency(us)=853,61] [UPDATE AverageLatency(us)=867,93] 
-2026-05-24 09:32:28:843 40 sec: 73085 operations; 1087,22 current ops/sec; est completion in 26 minutes [READ AverageLatency(us)=912,06] [UPDATE AverageLatency(us)=923,77] 
-2026-05-24 09:32:33:843 45 sec: 77887 operations; 960,59 current ops/sec; est completion in 28 minutes [READ AverageLatency(us)=1033,23] [UPDATE AverageLatency(us)=1044,73] 
-2026-05-24 09:32:38:840 50 sec: 82367 operations; 896,36 current ops/sec; est completion in 29 minutes [READ AverageLatency(us)=1108,5] [UPDATE AverageLatency(us)=1118,27] 
-2026-05-24 09:32:43:843 55 sec: 86530 operations; 832,1 current ops/sec; est completion in 30 minutes [READ AverageLatency(us)=1187,65] [UPDATE AverageLatency(us)=1210,49] 
-2026-05-24 09:32:48:845 60 sec: 90441 operations; 781,89 current ops/sec; est completion in 32 minutes [READ AverageLatency(us)=1269,53] [UPDATE AverageLatency(us)=1283,85] 
-2026-05-24 09:32:53:840 65 sec: 94230 operations; 758,56 current ops/sec; est completion in 33 minutes [READ AverageLatency(us)=1309,67] [UPDATE AverageLatency(us)=1322,21] 
-2026-05-24 09:32:58:842 70 sec: 97900 operations; 733,71 current ops/sec; est completion in 34 minutes [READ AverageLatency(us)=1356,39] [UPDATE AverageLatency(us)=1364,49] 
-2026-05-24 09:33:03:841 75 sec: 101314 operations; 682,94 current ops/sec; est completion in 35 minutes [READ AverageLatency(us)=1452,53] [UPDATE AverageLatency(us)=1470,49] 
-2026-05-24 09:33:08:843 80 sec: 104605 operations; 658,07 current ops/sec; est completion in 36 minutes [READ AverageLatency(us)=1512,39] [UPDATE AverageLatency(us)=1522,21] 
-2026-05-24 09:33:13:845 85 sec: 107776 operations; 633,82 current ops/sec; est completion in 38 minutes [READ AverageLatency(us)=1569,41] [UPDATE AverageLatency(us)=1581,15] 
+2026-05-24 18:19:14:217 5 sec: 45630 operations; 9124,18 current ops/sec; est completion in 1 minute [READ AverageLatency(us)=1306,5] [UPDATE AverageLatency(us)=1311,57] 
+2026-05-24 18:19:19:217 10 sec: 115745 operations; 14020,2 current ops/sec; est completion in 51 seconds [READ AverageLatency(us)=921,12] [UPDATE AverageLatency(us)=929,55] 
+2026-05-24 18:19:24:216 15 sec: 184488 operations; 13751,35 current ops/sec; est completion in 42 seconds [READ AverageLatency(us)=937,11] [UPDATE AverageLatency(us)=950,72] 
+2026-05-24 18:19:29:217 20 sec: 251429 operations; 13385,52 current ops/sec; est completion in 36 seconds [READ AverageLatency(us)=965,26] [UPDATE AverageLatency(us)=974,11] 
+2026-05-24 18:19:34:219 25 sec: 315539 operations; 12824,56 current ops/sec; est completion in 31 seconds [READ AverageLatency(us)=1005,84] [UPDATE AverageLatency(us)=1019,05] 
+2026-05-24 18:19:39:216 30 sec: 378948 operations; 12681,8 current ops/sec; est completion in 26 seconds [READ AverageLatency(us)=1000,46] [CLEANUP AverageLatency(us)=0,17] [UPDATE AverageLatency(us)=1008,4] 
+2026-05-24 18:19:44:218 35 sec: 426247 operations; 9457,91 current ops/sec; est completion in 23 seconds [READ AverageLatency(us)=731,66]  [UPDATE AverageLatency(us)=745,42] 
+2026-05-24 18:19:49:220 40 sec: 455000 operations; 5747,15 current ops/sec; est completion in 22 seconds [READ AverageLatency(us)=719,85] [CLEANUP AverageLatency(us)=0] [UPDATE AverageLatency(us)=731,97] 
+2026-05-24 18:19:54:218 45 sec: 455000 operations; 0 current ops/sec; est completion in 25 seconds    
+2026-05-24 18:19:59:219 50 sec: 455000 operations; 0 current ops/sec; est completion in 27 seconds    
+2026-05-24 18:20:04:220 55 sec: 455000 operations; 0 current ops/sec; est completion in 30 seconds    
+2026-05-24 18:20:09:220 60 sec: 455000 operations; 0 current ops/sec; est completion in 33 seconds    
+2026-05-24 18:20:14:220 65 sec: 455000 operations; 0 current ops/sec; est completion in 36 seconds    
+2026-05-24 18:20:19:220 70 sec: 455000 operations; 0 current ops/sec; est completion in 38 seconds    
+2026-05-24 18:20:24:217 75 sec: 455000 operations; 0 current ops/sec; est completion in 41 seconds    
+2026-05-24 18:20:29:218 80 sec: 455000 operations; 0 current ops/sec; est completion in 44 seconds    
+2026-05-24 18:20:34:219 85 sec: 455000 operations; 0 current ops/sec; est completion in 46 seconds    
+2026-05-24 18:20:39:220 90 sec: 455000 operations; 0 current ops/sec; est completion in 49 seconds    
+2026-05-24 18:20:44:220 95 sec: 455000 operations; 0 current ops/sec; est completion in 52 seconds    
