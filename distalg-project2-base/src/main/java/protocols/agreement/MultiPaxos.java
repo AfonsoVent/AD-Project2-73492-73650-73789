@@ -708,18 +708,6 @@ public class MultiPaxos extends GenericProtocol {
         return base;
     }
 
-
-
-    private void uponBroadcastMessage(BroadcastMessage msg, Host host, short sourceProto, int channelId) {
-        if(joinedInstance >= 0 ){
-            //Obviously your agreement protocols will not decide things as soon as you receive the first message
-            triggerNotification(new DecidedNotification(msg.getInstance(), msg.getOpId(), msg.getOp()));
-        } else {
-            //We have not yet received a JoinedNotification, but we are already receiving messages from the other
-            //agreement instances, maybe we should do something with them...?
-        }
-    }
-
     private void uponMsgFail(ProtoMessage msg, Host host, short destProto, Throwable throwable, int channelId) {
         //If a message fails to be sent, for whatever reason, log the message and the reason
         logger.error("Message {} to {} failed, reason: {}", msg, host, throwable);
